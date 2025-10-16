@@ -42,7 +42,18 @@ private:
     bool lHaveKey;
     bool rHaveKey;
     
+    // Constants
     static constexpr double PI = 3.14159265359;
+    static constexpr int WINDOW_WIDTH = 480;
+    static constexpr int WINDOW_HEIGHT = 640;
+    static constexpr int EDIT_PADDING = 2;
+    static constexpr int UPDATE_INTERVAL_MS = 200;
+    static constexpr int MAIN_LOOP_SLEEP_MS = 16;
+    static constexpr int SELECTION_SLEEP_MS = 4;
+    static constexpr double STICK_MAX_VALUE = 32767.0;
+    static constexpr double STICK_NORMALIZE_FACTOR = 32767.5;
+    static constexpr int DIRECTION_SECTORS = 8;
+    static constexpr double DEGREES_PER_SECTOR = 45.0;
 
 public:
     SimpleController() : di(nullptr), joystick(nullptr), hwnd(nullptr), editControl(nullptr),
@@ -94,12 +105,12 @@ private:
             "Controller to Maimai",
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT,
-            500, 600,
+            WINDOW_WIDTH, WINDOW_HEIGHT,
             nullptr, nullptr, GetModuleHandle(nullptr), this
         );
 
         if (!hwnd) {
-            std::cerr << "Failed to create window!" << std::endl;
+            logError("Failed to create window!");
             return;
         }
 
@@ -109,7 +120,7 @@ private:
             "EDIT",
             "",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-            10, 10, 470, 550,
+            EDIT_PADDING, EDIT_PADDING, WINDOW_WIDTH - (EDIT_PADDING * 2), WINDOW_HEIGHT - (EDIT_PADDING * 2),
             hwnd, nullptr, GetModuleHandle(nullptr), nullptr
         );
 
@@ -139,9 +150,9 @@ private:
                         GetClientRect(hwnd, &clientRect);
                         // Resize edit control to fill the client area with some padding
                         SetWindowPos(pThis->editControl, nullptr, 
-                                    10, 10, 
-                                    clientRect.right - 20, 
-                                    clientRect.bottom - 20, 
+                                    EDIT_PADDING, EDIT_PADDING, 
+                                    clientRect.right - (EDIT_PADDING * 2), 
+                                    clientRect.bottom - (EDIT_PADDING * 2), 
                                     SWP_NOZORDER);
                     }
                     return 0;
@@ -179,7 +190,7 @@ private:
                 if (initializeDirectInputWithDevice(selected.guid)) {
                     std::cout << "Selected DirectInput controller: " << selected.name << std::endl;
                 } else {
-                    std::cerr << "Failed to initialize selected controller!" << std::endl;
+                    logError("Failed to initialize selected controller!");
                     std::cerr << "Press any key to exit..." << std::endl;
                     _getch();
                     exit(1);
@@ -255,7 +266,7 @@ private:
                     }
                 }
             }
-            Sleep(4);
+            Sleep(SELECTION_SLEEP_MS);
         }
     }
 
@@ -310,7 +321,7 @@ private:
     bool initializeDirectInput() {
         HRESULT hr = DirectInput8Create(GetModuleHandle(nullptr), DIRECTINPUT_VERSION, IID_IDirectInput8, (void**)&di, nullptr);
         if (FAILED(hr)) {
-            std::cerr << "Failed to initialize DirectInput: " << hr << std::endl;
+            logError("Failed to initialize DirectInput: " + std::to_string(hr));
             return false;
         }
 
@@ -333,18 +344,18 @@ private:
         // Set data format
         hr = joystick->SetDataFormat(&c_dfDIJoystick);
         if (FAILED(hr)) {
-            std::cerr << "Failed to set data format: " << hr << std::endl;
+            logError("Failed to set data format: " + std::to_string(hr));
             return false;
         }
 
         // Set cooperative level (background mode)
         hr = joystick->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
         if (FAILED(hr)) {
-            std::cerr << "Failed to set cooperative level (background): " << hr << std::endl;
+            logError("Failed to set cooperative level (background): " + std::to_string(hr));
             // Try foreground as fallback
             hr = joystick->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_FOREGROUND);
             if (FAILED(hr)) {
-                std::cerr << "Failed to set cooperative level (foreground): " << hr << std::endl;
+                logError("Failed to set cooperative level (foreground): " + std::to_string(hr));
                 return false;
             }
         }
@@ -352,12 +363,12 @@ private:
         // Acquire the device
         hr = joystick->Acquire();
         if (FAILED(hr)) {
-            std::cerr << "Failed to acquire device: " << hr << std::endl;
+            logError("Failed to acquire device: " + std::to_string(hr));
             std::cerr << "This might be because another application is using the controller." << std::endl;
             std::cerr << "Try closing other controller applications and restart this program." << std::endl;
             return false;
         } else {
-            std::cout << "Controller acquired successfully!" << std::endl;
+            logInfo("Controller acquired successfully!");
             return true;
         }
     }
@@ -383,23 +394,27 @@ private:
         
         // Small delay to ensure key is processed
         if (isDown) {
-            Sleep(1);
+            Sleep(1); // Keep this small for responsiveness
         }
+    }
+
+    int getKeyCode(const std::string& key) {
+        if (key == "1") return '1';
+        if (key == "2") return '2';
+        if (key == "3") return '3';
+        if (key == "4") return '4';
+        if (key == "5") return '5';
+        if (key == "6") return '6';
+        if (key == "7") return '7';
+        if (key == "8") return '8';
+        return 0;
     }
 
     void simulateKeyPress(const std::string& key, bool isDown) {
         if (key == "null") return;
         
-        int keyCode = 0;
-        if (key == "1") keyCode = '1';
-        else if (key == "2") keyCode = '2';
-        else if (key == "3") keyCode = '3';
-        else if (key == "4") keyCode = '4';
-        else if (key == "5") keyCode = '5';
-        else if (key == "6") keyCode = '6';
-        else if (key == "7") keyCode = '7';
-        else if (key == "8") keyCode = '8';
-        else return;
+        int keyCode = getKeyCode(key);
+        if (keyCode == 0) return;
 
         std::cout << "Simulating key: " << key << " (down=" << isDown << ")" << std::endl;
         
@@ -414,59 +429,71 @@ private:
         }
     }
 
-    void leftRadialMenuHandler(int direction) {
-        if (lHaveKey) {
-            simulateKeyPress(lCurrentKey, true);
+    void handleRadialMenu(int direction, bool& haveKey, std::string& currentKey) {
+        if (haveKey) {
+            simulateKeyPress(currentKey, true);
         } else {
-            lHaveKey = true;
-            lCurrentKey = std::to_string(direction + 1);
-            simulateKeyPress(lCurrentKey, true);
+            haveKey = true;
+            currentKey = std::to_string(direction + 1);
+            simulateKeyPress(currentKey, true);
         }
+    }
+
+    void leftRadialMenuHandler(int direction) {
+        handleRadialMenu(direction, lHaveKey, lCurrentKey);
     }
 
     void rightRadialMenuHandler(int direction) {
-        if (rHaveKey) {
-            simulateKeyPress(rCurrentKey, true);
-        } else {
-            rHaveKey = true;
-            rCurrentKey = std::to_string(direction + 1);
-            simulateKeyPress(rCurrentKey, true);
-        }
+        handleRadialMenu(direction, rHaveKey, rCurrentKey);
     }
 
-    // Angle calculation with 0° = top, clockwise
+    /**
+     * Calculate angle from stick coordinates with 0° = top, clockwise
+     * @param x X coordinate (-1.0 to 1.0)
+     * @param y Y coordinate (-1.0 to 1.0)
+     * @return Angle in degrees (0-360) or -1 if no input
+     */
     double calculateAngle(double x, double y) {
         if (x == 0 && y == 0) {
-            return -1;
+            return -1; // No input detected
         }
         
         // Calculate angle with atan2 (0° = right, 90° = up, 180° = left, 270° = down)
         double angle = std::atan2(y, x) * 180.0 / PI;
         
-        // Convert to 0-360 range
+        // Convert to 0-360 range (atan2 returns -180 to 180)
         if (angle < 0) {
             angle += 360;
         }
         
-        // Rotate so 0° = top (90° becomes 0°)
+        // Rotate so 0° = top (90° becomes 0°) - this aligns with game expectations
         angle = angle - 90;
         if (angle < 0) {
             angle += 360;
         }
         
-        // Make clockwise
+        // Make clockwise (game expects clockwise rotation from top)
         angle = 360 - angle;
         
         return angle;
     }
 
+    /**
+     * Convert angle to direction sector (0-7)
+     * @param angle Angle in degrees (0-360) or -1 for no input
+     * @return Direction sector (0-7) or -1 for no input
+     * 
+     * Direction mapping:
+     * 0 = Up-Right, 1 = Right-Up, 2 = Right-Down, 3 = Down-Right
+     * 4 = Down-Left, 5 = Left-Down, 6 = Left-Up, 7 = Up-Left
+     */
     int getDirection(double angle) {
-        if (angle == -1) return -1;
+        if (angle == -1) return -1; // No input detected
         
         // Map 0-360 to 0-7 directions exactly like AHK script
-        // Use Floor(angle / 45) without any offset
-        int direction = static_cast<int>(std::floor(angle / 45.0));
-        if (direction >= 8) {
+        // Use Floor(angle / 45) without any offset for precise mapping
+        int direction = static_cast<int>(std::floor(angle / DEGREES_PER_SECTOR));
+        if (direction >= DIRECTION_SECTORS) {
             direction = 0;  // Reset to 0 if out of bounds (same as AHK script)
         }
         return direction;
@@ -486,29 +513,9 @@ private:
         info += "Controller Type: " + std::string(hasXInputController ? "XInput" : "DirectInput") + "\r\n\r\n";
         
         if (hasXInputController) {
-            info += "XINPUT VALUES:\r\n";
-            info += "Left Stick X: " + std::to_string(xInputState.Gamepad.sThumbLX) + "\r\n";
-            info += "Left Stick Y: " + std::to_string(xInputState.Gamepad.sThumbLY) + "\r\n";
-            info += "Right Stick X: " + std::to_string(xInputState.Gamepad.sThumbRX) + "\r\n";
-            info += "Right Stick Y: " + std::to_string(xInputState.Gamepad.sThumbRY) + "\r\n\r\n";
-            
-            info += "NORMALIZED:\r\n";
-            info += "Left X: " + std::to_string(xInputState.Gamepad.sThumbLX / 32767.0) + "\r\n";
-            info += "Left Y: " + std::to_string(xInputState.Gamepad.sThumbLY / 32767.0) + "\r\n";
-            info += "Right X: " + std::to_string(xInputState.Gamepad.sThumbRX / 32767.0) + "\r\n";
-            info += "Right Y: " + std::to_string(xInputState.Gamepad.sThumbRY / 32767.0) + "\r\n\r\n";
+            info += getXInputDebugInfo();
         } else if (diState) {
-            info += "DIRECTINPUT VALUES:\r\n";
-            info += "X: " + std::to_string(diState->lX) + "\r\n";
-            info += "Y: " + std::to_string(diState->lY) + "\r\n";
-            info += "Z: " + std::to_string(diState->lZ) + "\r\n";
-            info += "R: " + std::to_string(diState->lRz) + "\r\n\r\n";
-            
-            info += "NORMALIZED:\r\n";
-            info += "X: " + std::to_string((diState->lX / 32767.5) - 1.0) + "\r\n";
-            info += "Y: " + std::to_string(1.0 - (diState->lY / 32767.5)) + "\r\n";
-            info += "Z: " + std::to_string((diState->lZ / 32767.5) - 1.0) + "\r\n";
-            info += "R: " + std::to_string(1.0 - (diState->lRz / 32767.5)) + "\r\n\r\n";
+            info += getDirectInputDebugInfo(diState);
         } else {
             info += "DIRECTINPUT VALUES:\r\n";
             info += "X: " + std::to_string(0) + "\r\n";
@@ -531,7 +538,62 @@ private:
         info += "Left: " + std::to_string(lDirection) + "\r\n";
         info += "Right: " + std::to_string(rDirection) + "\r\n\r\n";
         
-        info += "BUTTONS:\r\n";
+        info += getButtonDebugInfo(diState);
+        
+        info += "ACTIVE KEYS:\r\n";
+        info += "Left: " + lCurrentKey + " (" + (lHaveKey ? "ON" : "OFF") + ")\r\n";
+        info += "Right: " + rCurrentKey + " (" + (rHaveKey ? "ON" : "OFF") + ")\r\n\r\n";
+        
+        info += "DIRECTION MAPPING:\r\n";
+        info += "0 = Up-Right,1 = Right-Up, 2 = Right-Down, 3 = Down-Right\r\n";
+        info += "4 = Down-Left, 5 = Left-Down, 6 = Left-Up, 7 = Up-Left\r\n";
+
+        SetWindowTextA(editControl, info.c_str());
+    }
+
+private:
+    void logError(const std::string& message) {
+        std::cerr << "[ERROR] " << message << std::endl;
+    }
+    
+    void logInfo(const std::string& message) {
+        std::cout << "[INFO] " << message << std::endl;
+    }
+    
+    std::string getXInputDebugInfo() {
+        std::string info = "XINPUT VALUES:\r\n";
+        info += "Left Stick X: " + std::to_string(xInputState.Gamepad.sThumbLX) + "\r\n";
+        info += "Left Stick Y: " + std::to_string(xInputState.Gamepad.sThumbLY) + "\r\n";
+        info += "Right Stick X: " + std::to_string(xInputState.Gamepad.sThumbRX) + "\r\n";
+        info += "Right Stick Y: " + std::to_string(xInputState.Gamepad.sThumbRY) + "\r\n\r\n";
+        
+        info += "NORMALIZED:\r\n";
+        info += "Left X: " + std::to_string(xInputState.Gamepad.sThumbLX / STICK_MAX_VALUE) + "\r\n";
+        info += "Left Y: " + std::to_string(xInputState.Gamepad.sThumbLY / STICK_MAX_VALUE) + "\r\n";
+        info += "Right X: " + std::to_string(xInputState.Gamepad.sThumbRX / STICK_MAX_VALUE) + "\r\n";
+        info += "Right Y: " + std::to_string(xInputState.Gamepad.sThumbRY / STICK_MAX_VALUE) + "\r\n\r\n";
+        
+        return info;
+    }
+    
+    std::string getDirectInputDebugInfo(const DIJOYSTATE* diState) {
+        std::string info = "DIRECTINPUT VALUES:\r\n";
+        info += "X: " + std::to_string(diState->lX) + "\r\n";
+        info += "Y: " + std::to_string(diState->lY) + "\r\n";
+        info += "Z: " + std::to_string(diState->lZ) + "\r\n";
+        info += "R: " + std::to_string(diState->lRz) + "\r\n\r\n";
+        
+        info += "NORMALIZED:\r\n";
+        info += "X: " + std::to_string((diState->lX / STICK_NORMALIZE_FACTOR) - 1.0) + "\r\n";
+        info += "Y: " + std::to_string(1.0 - (diState->lY / STICK_NORMALIZE_FACTOR)) + "\r\n";
+        info += "Z: " + std::to_string((diState->lZ / STICK_NORMALIZE_FACTOR) - 1.0) + "\r\n";
+        info += "R: " + std::to_string(1.0 - (diState->lRz / STICK_NORMALIZE_FACTOR)) + "\r\n\r\n";
+        
+        return info;
+    }
+    
+    std::string getButtonDebugInfo(const DIJOYSTATE* diState) {
+        std::string info = "BUTTONS:\r\n";
         if (hasXInputController) {
             info += "Left Shoulder: " + std::to_string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? 1 : 0) + "\r\n";
             info += "Right Shoulder: " + std::to_string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? 1 : 0) + "\r\n";
@@ -559,19 +621,15 @@ private:
             info += "All Buttons: ";
             info += "\r\n\r\n";
         }
-        
-        info += "ACTIVE KEYS:\r\n";
-        info += "Left: " + lCurrentKey + " (" + (lHaveKey ? "ON" : "OFF") + ")\r\n";
-        info += "Right: " + rCurrentKey + " (" + (rHaveKey ? "ON" : "OFF") + ")\r\n\r\n";
-        
-        info += "DIRECTION MAPPING:\r\n";
-        info += "0 = Up-Right,1 = Right-Up, 2 = Right-Down, 3 = Down-Right\r\n";
-        info += "4 = Down-Left, 5 = Left-Down, 6 = Left-Up, 7 = Up-Left\r\n";
-
-        SetWindowTextA(editControl, info.c_str());
+        return info;
     }
 
 public:
+    /**
+     * Main application loop - processes controller input and updates GUI
+     * Handles both XInput and DirectInput controllers
+     * Updates debug information and manages key simulation
+     */
     void run() {
         if (!hwnd || (!joystick && !hasXInputController)) {
             std::cerr << "Not initialized!" << std::endl;
@@ -600,7 +658,7 @@ public:
             double joyX = 0, joyY = 0, joyZ = 0, joyR = 0;
             
             if (hasXInputController) {
-                // Process XInput controller
+                // Process XInput controller (Xbox controllers)
                 DWORD result = XInputGetState(xInputControllerIndex, &xInputState);
                 if (result == ERROR_SUCCESS) {
                     controllerSuccess = true;
@@ -609,12 +667,12 @@ public:
                     leftButtonPressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
                     rightButtonPressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
                     
-                    // XInput stick values: -32768 to 32767
+                    // XInput stick values: -32768 to 32767, normalize to -1.0 to 1.0
                     // For XInput, we need to match DirectInput coordinate system
-                    joyX = xInputState.Gamepad.sThumbLX / 32767.0;   // Left stick X
-                    joyY = xInputState.Gamepad.sThumbLY / 32767.0;   // Left stick Y (not inverted for XInput)
-                    joyZ = xInputState.Gamepad.sThumbRX / 32767.0;   // Right stick X
-                    joyR = xInputState.Gamepad.sThumbRY / 32767.0;   // Right stick Y (not inverted for XInput)
+                    joyX = xInputState.Gamepad.sThumbLX / STICK_MAX_VALUE;   // Left stick X
+                    joyY = xInputState.Gamepad.sThumbLY / STICK_MAX_VALUE;   // Left stick Y (not inverted for XInput)
+                    joyZ = xInputState.Gamepad.sThumbRX / STICK_MAX_VALUE;   // Right stick X
+                    joyR = xInputState.Gamepad.sThumbRY / STICK_MAX_VALUE;   // Right stick Y (not inverted for XInput)
                 }
             } else if (joystick) {
                 // Process DirectInput controller
@@ -710,7 +768,7 @@ public:
                 }
             }
 
-            Sleep(16); // ~60 FPS
+            Sleep(MAIN_LOOP_SLEEP_MS); // ~60 FPS
         }
         
         std::cout << "run() method ending..." << std::endl;
@@ -731,7 +789,7 @@ int main() {
     try {
         SimpleController app;
             if (!app.initialize()) {
-                std::cerr << "Failed to initialize application!" << std::endl;
+                std::cerr << "[ERROR] Failed to initialize application!" << std::endl;
                 continue;
             }
             app.run();
