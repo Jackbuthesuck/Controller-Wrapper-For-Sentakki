@@ -1,6 +1,6 @@
 # Controller to Maimai for Sentakki - C++ Version
 
-This is a C++ port of the AutoHotkey script that maps game controller inputs to keyboard keys for playing Maimai in Osu!.
+This is a C++ port of the AutoHotkey script that maps game controller inputs to keyboard keys for playing Maimai in the Sentakki mod for Osu! lazer.
 
 ## Features
 
@@ -15,7 +15,7 @@ This is a C++ port of the AutoHotkey script that maps game controller inputs to 
 - Windows 10/11
 - Visual Studio 2019 or later (or compatible compiler)
 - CMake 3.16 or later
-- XInput-compatible controller (Xbox controller recommended)
+- DirectInput Controller. Ie. Dualshock 4
 
 ## Building
 
