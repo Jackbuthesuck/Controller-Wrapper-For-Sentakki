@@ -46,27 +46,27 @@ public:
 private:
     void createGUI() {
         // Register window class
-        WNDCLASSEXW wc = {};
-        wc.cbSize = sizeof(WNDCLASSEXW);
+        WNDCLASSEXA wc = {};
+        wc.cbSize = sizeof(WNDCLASSEXA);
         wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.lpfnWndProc = WindowProc;
         wc.hInstance = GetModuleHandle(nullptr);
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-        wc.lpszClassName = L"SimpleController";
+        wc.lpszClassName = "SimpleController";
         wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
         wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
 
-        RegisterClassExW(&wc);
+        RegisterClassExA(&wc);
 
         // Create main window (always on top, no focus stealing)
-        hwnd = CreateWindowExW(
+        hwnd = CreateWindowExA(
             WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            L"SimpleController",
-            L"Simple Controller to Maimai - Press F7 to exit",
+            "SimpleController",
+            "Controller to Maimai",
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT,
-            700, 600,
+            500, 600,
             nullptr, nullptr, GetModuleHandle(nullptr), this
         );
 
@@ -76,12 +76,12 @@ private:
         }
 
         // Create edit control for debug info
-        editControl = CreateWindowExW(
+        editControl = CreateWindowExA(
             WS_EX_CLIENTEDGE,
-            L"EDIT",
-            L"",
+            "EDIT",
+            "",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-            10, 10, 670, 550,
+            10, 10, 470, 550,
             hwnd, nullptr, GetModuleHandle(nullptr), nullptr
         );
 
@@ -103,14 +103,21 @@ private:
         if (pThis) {
             switch (uMsg) {
                 case WM_DESTROY:
-                    PostQuitMessage(0);
+                    FreeConsole();
+                    ExitProcess(0);
                     return 0;
-                case WM_KEYDOWN:
-                    if (wParam == VK_F7) {
-                        PostQuitMessage(0);
-                        return 0;
+                case WM_SIZE:
+                    if (pThis->editControl) {
+                        RECT clientRect;
+                        GetClientRect(hwnd, &clientRect);
+                        // Resize edit control to fill the client area with some padding
+                        SetWindowPos(pThis->editControl, nullptr, 
+                                    10, 10, 
+                                    clientRect.right - 20, 
+                                    clientRect.bottom - 20, 
+                                    SWP_NOZORDER);
                     }
-                    break;
+                    return 0;
             }
         }
 
@@ -292,7 +299,6 @@ private:
         lastUpdate = currentTime;
         
         std::string info = "=== SIMPLE CONTROLLER ===\r\n";
-        info += "Press F7 to exit (Or just close the window) \r\n\r\n";
         
         info += "RAW VALUES:\r\n";
         info += "X: " + std::to_string(state.lX) + "\r\n";
@@ -330,11 +336,10 @@ private:
         info += "Right: " + rCurrentKey + " (" + (rHaveKey ? "ON" : "OFF") + ")\r\n\r\n";
         
         info += "DIRECTION MAPPING:\r\n";
-        info += "0=Top, 1=Top-Right, 2=Right, 3=Bottom-Right\r\n";
-        info += "4=Bottom, 5=Bottom-Left, 6=Left, 7=Top-Left\r\n";
+        info += "0 = Up-Right,1 = Right-Up, 2 = Right-Down, 3 = Down-Right\r\n";
+        info += "4 = Down-Left, 5 = Left-Down, 6 = Left-Up, 7 = Up-Left\r\n";
 
-        std::wstring winfo(info.begin(), info.end());
-        SetWindowTextW(editControl, winfo.c_str());
+        SetWindowTextA(editControl, info.c_str());
     }
 
 public:
@@ -434,7 +439,6 @@ int main() {
     freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
     
     std::cout << "Simple Controller to Maimai" << std::endl;
-    std::cout << "Press F7 to exit" << std::endl;
     std::cout << "Debug: Check this console for key simulation errors" << std::endl;
 
     try {
@@ -442,6 +446,7 @@ int main() {
         app.run();
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
+        FreeConsole();
         return 1;
     }
 
