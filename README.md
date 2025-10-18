@@ -1,78 +1,125 @@
-# Controller to Maimai for Sentakki - C++ Version
+# Controller Input Wrapper for Sentakki
 
-This is a C++ port of the AutoHotkey script that maps game controller inputs to keyboard keys for playing Maimai in the Sentakki mod for Osu! lazer.
+A C++ controller input wrapper that maps analog sticks to keyboard or mouse inputs with a real-time visual overlay. Designed for playing Sentakki (Osu! lazer mod).
 
-This program is written with the help of Cursor.
+Built with Cursor AI assistance.
 
-## Features
+## Available Versions
 
-- **Auto-controller detection**: Automatically detects connected XInput controllers
-- **Radial menu mapping**: Maps joystick positions to keyboard keys (1-8) in a radial pattern
-- **Dual joystick support**: Uses left and right joysticks independently
-- **Real-time debug display**: Shows current angles, directions, and key states
+### ControllerToNumberKeys.exe
+Maps controller inputs to keyboard number keys (1-8) based on stick direction.
+
+- Both bumpers trigger number keys based on stick angle
+- Keys dynamically switch as you rotate the stick
+- Prevents both sticks from pressing the same key simultaneously
+
+### ControllerToMouse.exe  
+Maps controller inputs to mouse cursor position with left-click.
+
+- One bumper: Mouse follows that stick + holds LMB
+- Both bumpers: Mouse alternates between stick positions every frame
+- Mouse returns to screen center when released
+
+## Visual Overlay
+
+Both versions include a transparent overlay showing:
+
+- Real-time stick positions (Blue = left, Pink = right)
+- Angle indicators as arc segments
+- Boundary circle (visible only when sticks move)
+- Fade effects based on stick distance from center
+- Optional debug information display
+- Full-screen width, 90% height
+- Click-through, doesn't interfere with other windows
 
 ## Requirements
 
 - Windows 10/11
-- Visual Studio 2019 or later (or compatible compiler)
-- CMake 3.16 or later
-- DirectInput Controller. Ie. Dualshock 4
+- Visual Studio 2022 (for building)
+- XInput or DirectInput compatible controller
 
 ## Building
 
-### Using the provided batch file:
+Run the batch file:
 ```bash
 build.bat
 ```
 
-### Manual build:
-```bash
-mkdir build
-cd build
-cmake .. -G "Visual Studio 17 2022" -A x64
-cmake --build . --config Release
-```
+This compiles both programs.
 
 ## Usage
 
-1. Connect your controller (XInput or DirectInput)
-2. Run the executable: `ControllerToMaimai.exe`
-3. The program will auto-detect your controller and show a debug window
-4. Use the left and right shoulder buttons (LB/RB) to activate radial menus
-5. Move the joysticks to select different keys (1-8)
-6. Press F7 to exit
+1. Run `ControllerToNumberKeys.exe` or `ControllerToMouse.exe`
+2. Select your controller from the menu
+3. The overlay appears automatically
 
-## Controller Mapping
+### Controls
 
-- **Left Joystick + LB**: Maps to keys 1-8 based on joystick direction
-- **Right Joystick + RB**: Maps to keys 1-8 based on joystick direction
-- **F7**: Exit program
+**ControllerToNumberKeys:**
+- Hold bumper + move stick → Triggers keys 1-8 based on direction
+- Keys switch as you rotate the stick
 
-## Key Layout (Radial Pattern)
+**ControllerToMouse:**
+- Hold one bumper → Mouse follows that stick, LMB held
+- Hold both bumpers → Mouse alternates between sticks every frame
+- Release all → Mouse returns to center
+
+**Keyboard Shortcuts:**
+- `Ctrl+Shift+` ` → Toggle debug info
+- `Ctrl+Alt+Shift+` ` → Restart program
+- Close console → Exit program
+
+## Direction Mapping
 
 ```
-  8   1
-7       2
-6       3
-  5   4
+     1   2
+   8       3
+   7       4
+     6   5
 ```
+
+Each direction corresponds to a 45-degree sector starting from top (0°) going clockwise.
 
 ## Technical Details
 
-- Uses XInput API for controller input
-- Uses Windows SendInput API for keyboard simulation
-- Native Windows GUI for debug display
-- Real-time processing with 2ms sleep intervals
+- DirectInput 8 + XInput 1.4 for controller input
+- GDI for overlay rendering
+- Auto-detects both XInput and DirectInput devices
+- Updates at screen refresh rate
+- Layered windows with color key transparency
 
-## Differences from AHK Version
+## Features
 
-- Uses XInput instead of DirectInput (better Xbox controller support)
-- Native C++ performance
-- More robust error handling
-- Cross-platform potential (currently Windows-only)
+**Dynamic Key Switching (NumberKeys):**
+- Keys automatically switch when rotating stick while holding bumper
+- Old key releases, new key presses
+
+**Alternating Mode (Mouse):**
+- When both bumpers pressed, mouse rapidly switches between stick positions
+- Can simulate multi-touch behavior in some applications
+
+**Fade System:**
+- Elements fade from invisible to visible based on stick distance from center
+- 0% distance = invisible
+- 50%+ distance = full visibility
+- Uses pen width modulation to avoid color artifacts
 
 ## Troubleshooting
 
-- **No controller detected**: Ensure your controller is XInput-compatible and properly connected
-- **Keys not working**: Run as administrator if needed for SendInput to work in some games
-- **Build errors**: Ensure you have Visual Studio with C++ development tools installed
+**No controller detected:**
+- Check controller connection
+- Verify drivers are installed
+
+**Overlay not appearing:**
+- Ensure program is running (console window visible)
+- Try restarting with keyboard shortcut
+
+**Input not working in game:**
+- Some games require administrator privileges
+- Right-click exe → "Run as administrator"
+
+## Notes
+
+- Touch version (ControllerToTouch.exe) was attempted but requires touch hardware/drivers
+- Use ControllerToMouse.exe as an alternative
+- Both programs support controller hot-swapping via restart function
