@@ -12,6 +12,7 @@ Maps controller inputs to keyboard number keys (1-8) based on stick direction.
 - Both bumpers trigger number keys based on stick angle
 - Keys dynamically switch as you rotate the stick
 - Prevents both sticks from pressing the same key simultaneously
+- Angle is used to decide what button to press.
 
 ### ControllerToMouse.exe  
 Maps controller inputs to mouse cursor position with left-click.
@@ -19,22 +20,23 @@ Maps controller inputs to mouse cursor position with left-click.
 - One bumper: Mouse follows that stick + holds LMB
 - Both bumpers: Mouse alternates between stick positions every frame
 - Mouse returns to screen center when released
+- Position is used to decide where the cursor will be.
+
+Will be scuffed as windows only allow for 1 cursor.
 
 ## Visual Overlay
 
 Both versions include a transparent overlay showing:
 
+- The overlay will only appear if the stick is moved.
 - Real-time stick positions (Blue = left, Pink = right)
 - Angle indicators as arc segments
-- Boundary circle (visible only when sticks move)
-- Fade effects based on stick distance from center
 - Optional debug information display
-- Full-screen width, 90% height
-- Click-through, doesn't interfere with other windows
+- The Overlay is fixed to 90% of screen height
 
 ## Requirements
 
-- Windows 10/11
+- Windows 10/11 (other windows may work. I don't know)
 - Visual Studio 2022 (for building)
 - XInput or DirectInput compatible controller
 
@@ -58,10 +60,12 @@ This compiles both programs.
 **ControllerToNumberKeys:**
 - Hold bumper + move stick → Triggers keys 1-8 based on direction
 - Keys switch as you rotate the stick
+- Left Bumper use the angle of the left stick. Right use right.
 
 **ControllerToMouse:**
 - Hold one bumper → Mouse follows that stick, LMB held
 - Hold both bumpers → Mouse alternates between sticks every frame
+- Left Bumper use the position of the left stick. Right use right.
 - Release all → Mouse returns to center
 
 **Keyboard Shortcuts:**
@@ -69,16 +73,6 @@ This compiles both programs.
 - `Ctrl+Alt+Shift+` ` → Restart program
 - Close console → Exit program
 
-## Direction Mapping
-
-```
-     1   2
-   8       3
-   7       4
-     6   5
-```
-
-Each direction corresponds to a 45-degree sector starting from top (0°) going clockwise.
 
 ## Technical Details
 
@@ -88,38 +82,13 @@ Each direction corresponds to a 45-degree sector starting from top (0°) going c
 - Updates at screen refresh rate
 - Layered windows with color key transparency
 
-## Features
-
-**Dynamic Key Switching (NumberKeys):**
-- Keys automatically switch when rotating stick while holding bumper
-- Old key releases, new key presses
-
-**Alternating Mode (Mouse):**
-- When both bumpers pressed, mouse rapidly switches between stick positions
-- Can simulate multi-touch behavior in some applications
-
-**Fade System:**
-- Elements fade from invisible to visible based on stick distance from center
-- 0% distance = invisible
-- 50%+ distance = full visibility
-- Uses pen width modulation to avoid color artifacts
-
-## Troubleshooting
-
-**No controller detected:**
-- Check controller connection
-- Verify drivers are installed
-
-**Overlay not appearing:**
-- Ensure program is running (console window visible)
-- Try restarting with keyboard shortcut
-
-**Input not working in game:**
-- Some games require administrator privileges
-- Right-click exe → "Run as administrator"
-
 ## Notes
 
+Program
 - Touch version (ControllerToTouch.exe) was attempted but requires touch hardware/drivers
 - Use ControllerToMouse.exe as an alternative
 - Both programs support controller hot-swapping via restart function
+
+Me
+- I only have Dualshock 4 and Xbox 360 controller to test.
+- Most of the code is written by cursor, as I don't know C++ at all.
