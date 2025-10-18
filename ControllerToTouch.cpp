@@ -9,11 +9,20 @@
 #include <vector>
 #include <conio.h>
 
+// C++/WinRT includes for UWP InputInjector
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.UI.Input.Preview.Injection.h>
+
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "xinput.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "windowsapp.lib")
+
+using namespace winrt;
+using namespace Windows::UI::Input::Preview::Injection;
 
 enum class ControllerType {
     XInput,
@@ -34,6 +43,8 @@ private:
     HWND hwnd;
     HWND editControl;
     HWND overlayHwnd;
+    std::string debugText; // Store debug info for overlay display
+    bool showDebugInfo; // Toggle debug info visibility
     
     // XInput support
     bool hasXInputController;
@@ -66,7 +77,10 @@ private:
     bool prevRightBumper;
     int overlayPosX;  // Store overlay position for touch mapping
     int overlayPosY;
-    bool touchInitialized;
+    
+    // UWP InputInjector
+    InputInjector inputInjector;
+    bool inputInjectorInitialized;
     
     // Constants
     static constexpr double PI = 3.14159265359;
@@ -92,9 +106,13 @@ public:
                         overlayLeftAngle(-1.0), overlayRightAngle(-1.0), overlayStickRadius(150),
                         overlayLeftAlpha(0), overlayRightAlpha(0), updateIntervalMs(16),
                         leftTouchActive(false), rightTouchActive(false), prevLeftBumper(false), prevRightBumper(false),
-                        overlayPosX(0), overlayPosY(0), touchInitialized(false) {
+                        overlayPosX(0), overlayPosY(0), inputInjector(nullptr), inputInjectorInitialized(false),
+                        debugText(""), showDebugInfo(true) {
         // Don't initialize controllers or create GUI in constructor
         // This will be done in the main loop
+        
+        // Initialize WinRT
+        init_apartment();
     }
     
     bool initialize() {
@@ -151,18 +169,8 @@ private:
             return;
         }
 
-        // Create edit control for debug info
-        editControl = CreateWindowExA(
-            WS_EX_CLIENTEDGE,
-            "EDIT",
-            "",
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-            EDIT_PADDING, EDIT_PADDING, WINDOW_WIDTH - (EDIT_PADDING * 2), WINDOW_HEIGHT - (EDIT_PADDING * 2),
-            hwnd, nullptr, GetModuleHandle(nullptr), nullptr
-        );
-
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
+        // Hide the main window - we only use overlay now
+        ShowWindow(hwnd, SW_HIDE);
         
         // Create the overlay window
         createOverlay();
@@ -185,11 +193,12 @@ private:
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
         
-        // Calculate overlay size - 90% of screen height, make it square
+        // Calculate overlay size - full screen width, 90% height
         int overlayHeight = (int)(screenHeight * 0.9);
-        int overlayWidth = overlayHeight; // Make it square
+        int overlayWidth = screenWidth; // Full screen width for debug text visibility
         
         // Calculate stick radius to fill most of the overlay (leave some padding)
+        // Use height as reference since width is now full-screen
         overlayStickRadius = (int)(overlayHeight * 0.45); // 45% of height (90% of half = radius)
         
         // Get screen refresh rate
@@ -208,11 +217,11 @@ private:
             std::cout << "Could not detect refresh rate, defaulting to 60Hz (16ms)" << std::endl;
         }
         
-        // Center the overlay on screen
-        int posX = (screenWidth - overlayWidth) / 2;
+        // Center the overlay on screen (vertically only, full width horizontally)
+        int posX = 0; // Start at left edge of screen
         int posY = (screenHeight - overlayHeight) / 2;
         
-        // Store overlay position for mouse mapping
+        // Store overlay position
         overlayPosX = posX;
         overlayPosY = posY;
         
@@ -276,7 +285,7 @@ private:
         GetClientRect(overlayHwnd, &rect);
         
         // Clear the window - make it completely transparent
-        // Fill with a color that we'll make transparent
+        // Fill with black which is our transparency key
         HBRUSH clearBrush = CreateSolidBrush(RGB(0, 0, 0));
         FillRect(hdc, &rect, clearBrush);
         DeleteObject(clearBrush);
@@ -284,6 +293,29 @@ private:
         // Calculate center position - both sticks in the same location
         int centerX = rect.right / 2;
         int centerY = rect.bottom / 2;
+        
+        // Draw boundary circle with fade based on max alpha
+        int maxAlpha = (overlayLeftAlpha > overlayRightAlpha) ? overlayLeftAlpha : overlayRightAlpha;
+        
+        if (maxAlpha > 10) {
+            // Modulate pen width based on alpha for fade effect
+            int boundaryWidth = 1 + (maxAlpha * 3 / 255); // 1-4 pixels
+            
+            // Draw outer circle (boundary) - only once for both sticks, full gray color
+            HPEN boundaryPen = CreatePen(PS_SOLID, boundaryWidth, RGB(200, 200, 200));
+            HPEN oldPen = (HPEN)SelectObject(hdc, boundaryPen);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            
+            Ellipse(hdc, 
+                    centerX - overlayStickRadius, 
+                    centerY - overlayStickRadius,
+                    centerX + overlayStickRadius, 
+                    centerY + overlayStickRadius);
+            
+            SelectObject(hdc, oldPen);
+            SelectObject(hdc, oldBrush);
+            DeleteObject(boundaryPen);
+        }
         
         // Draw angle indicators first (so they appear behind the stick indicators)
         drawAngleIndicator(hdc, centerX, centerY, overlayLeftAngle, RGB(100, 150, 255), overlayLeftAlpha);
@@ -295,21 +327,18 @@ private:
         
         // Draw right stick (pink)
         drawStick(hdc, centerX, centerY, overlayRightX, overlayRightY, RGB(255, 100, 150), overlayRightAlpha);
+        
+        // Draw debug text on the middle left (if enabled)
+        if (showDebugInfo && !debugText.empty()) {
+            drawDebugText(hdc, rect);
+        }
     }
 
     void drawAngleIndicator(HDC hdc, int centerX, int centerY, double angle, COLORREF color, int alpha) {
         if (angle < 0 || alpha == 0) return; // No input detected or invisible
         
-        // Extract RGB components
-        int r = GetRValue(color);
-        int g = GetGValue(color);
-        int b = GetBValue(color);
-        
-        // Create blended color based on alpha (blend with black background)
-        int blendR = (r * alpha) / 255;
-        int blendG = (g * alpha) / 255;
-        int blendB = (b * alpha) / 255;
-        COLORREF blendedColor = RGB(blendR, blendG, blendB);
+        // Skip if too faint to avoid artifacts
+        if (alpha < 10) return;
         
         // Draw an arc along the main boundary circle
         double arcSpan = 45.0; // Arc spans 45 degrees (22.5 degrees on each side)
@@ -328,8 +357,11 @@ private:
         int endX = centerX + (int)(cos(endRad) * overlayStickRadius);
         int endY = centerY - (int)(sin(endRad) * overlayStickRadius);
         
-        // Draw the arc along the main circle boundary
-        HPEN arcPen = CreatePen(PS_SOLID, 10, blendedColor);
+        // Modulate pen width based on alpha for fade effect (thinner when faint)
+        int penWidth = 2 + (alpha * 8 / 255); // 2-10 pixels
+        
+        // Draw the arc along the main circle boundary - use full bright color for vibrancy
+        HPEN arcPen = CreatePen(PS_SOLID, penWidth, color);
         HPEN oldPen = (HPEN)SelectObject(hdc, arcPen);
         HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
         
@@ -345,47 +377,24 @@ private:
     }
 
     void drawStick(HDC hdc, int centerX, int centerY, double stickX, double stickY, COLORREF color, int alpha) {
-        // Draw outer circle (boundary)
-        HPEN boundaryPen = CreatePen(PS_SOLID, 4, RGB(150, 150, 150));
-        HPEN oldPen = (HPEN)SelectObject(hdc, boundaryPen);
-        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        
-        Ellipse(hdc, 
-                centerX - overlayStickRadius, 
-                centerY - overlayStickRadius,
-                centerX + overlayStickRadius, 
-                centerY + overlayStickRadius);
-        
-        // Draw center cross (larger)
-        MoveToEx(hdc, centerX - 15, centerY, nullptr);
-        LineTo(hdc, centerX + 15, centerY);
-        MoveToEx(hdc, centerX, centerY - 15, nullptr);
-        LineTo(hdc, centerX, centerY + 15);
-        
-        SelectObject(hdc, oldPen);
-        DeleteObject(boundaryPen);
+        // Boundary circle is now drawn in drawOverlay() to avoid duplication
         
         if (alpha == 0) return; // Don't draw position indicator if invisible
         
-        // Extract RGB components and blend with black background
-        int r = GetRValue(color);
-        int g = GetGValue(color);
-        int b = GetBValue(color);
+        // Skip if too faint to avoid artifacts
+        if (alpha < 10) return;
         
-        int blendR = (r * alpha) / 255;
-        int blendG = (g * alpha) / 255;
-        int blendB = (b * alpha) / 255;
-        COLORREF blendedColor = RGB(blendR, blendG, blendB);
+        // Modulate pen width based on alpha for fade effect (thinner when faint)
+        int penWidth = 1 + (alpha * 5 / 255); // 1-6 pixels
         
         // Draw stick position indicator - hollow circle with colored edge
         int indicatorX = centerX + (int)(stickX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
         int indicatorY = centerY - (int)(stickY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
         
-        // Create colored pen for the edge and transparent brush
-        HPEN indicatorPen = CreatePen(PS_SOLID, 6, blendedColor);
-        
-        SelectObject(hdc, indicatorPen);
-        SelectObject(hdc, GetStockObject(NULL_BRUSH)); // Hollow/transparent interior
+        // Create colored pen for the edge with modulated width - use full bright color
+        HPEN indicatorPen = CreatePen(PS_SOLID, penWidth, color);
+        HPEN oldPen = (HPEN)SelectObject(hdc, indicatorPen);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
         
         Ellipse(hdc,
                 indicatorX - OVERLAY_STICK_INDICATOR_RADIUS,
@@ -393,28 +402,69 @@ private:
                 indicatorX + OVERLAY_STICK_INDICATOR_RADIUS,
                 indicatorY + OVERLAY_STICK_INDICATOR_RADIUS);
         
+        SelectObject(hdc, oldPen);
         SelectObject(hdc, oldBrush);
         DeleteObject(indicatorPen);
     }
 
+    void drawDebugText(HDC hdc, RECT rect) {
+        // Overlay now spans full screen width starting at x=0
+        // So textX=20 means 20 pixels from left edge of screen
+        int textX = 20;
+        int textY = rect.bottom / 2 - 250; // Middle of overlay window (vertically centered on screen)
+        
+        // Ensure text is visible (not off-screen)
+        if (textY < 20) textY = 20;
+        
+        // Set up text rendering
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        
+        // Create font for debug text
+        HFONT hFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                DEFAULT_PITCH | FF_DONTCARE, "Consolas");
+        HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
+        
+        // Split debug text into lines and render
+        std::string text = debugText;
+        size_t pos = 0;
+        int lineHeight = 18;
+        int currentY = textY;
+        
+        while ((pos = text.find("\r\n")) != std::string::npos) {
+            std::string line = text.substr(0, pos);
+            TextOutA(hdc, textX, currentY, line.c_str(), line.length());
+            currentY += lineHeight;
+            text.erase(0, pos + 2); // Remove "\r\n"
+        }
+        // Draw remaining text
+        if (!text.empty()) {
+            TextOutA(hdc, textX, currentY, text.c_str(), text.length());
+        }
+        
+        SelectObject(hdc, oldFont);
+        DeleteObject(hFont);
+    }
+
     void initializeTouchInjection() {
-        if (!touchInitialized) {
-            // Check if system supports touch
-            int touchSupport = GetSystemMetrics(SM_DIGITIZER);
-            if (touchSupport & NID_READY) {
-                std::cout << "System has digitizer support" << std::endl;
-            } else {
-                std::cout << "WARNING: System may not have touch digitizer hardware" << std::endl;
-                std::cout << "Touch injection may still work for software that accepts injected touches" << std::endl;
-            }
-            
-            // Try to initialize with max 10 touch points (more than we need)
-            if (InitializeTouchInjection(10, TOUCH_FEEDBACK_NONE)) {
-                touchInitialized = true;
-                std::cout << "Touch injection initialized successfully (max 10 touch points)" << std::endl;
-            } else {
-                DWORD error = GetLastError();
-                std::cout << "Failed to initialize touch injection, error: " << error << std::endl;
+        if (!inputInjectorInitialized) {
+            try {
+                // Create UWP InputInjector - this should work WITHOUT touch hardware!
+                inputInjector = InputInjector::TryCreate();
+                
+                if (inputInjector) {
+                    // Initialize for touch input with default visualization
+                    inputInjector.InitializeTouchInjection(InjectedInputVisualizationMode::Default);
+                    inputInjectorInitialized = true;
+                    std::cout << "UWP InputInjector initialized successfully!" << std::endl;
+                    std::cout << "Touch injection enabled (does NOT require touch hardware)" << std::endl;
+                } else {
+                    std::cout << "Failed to create InputInjector - system may not support UWP input injection" << std::endl;
+                }
+            } catch (hresult_error const& ex) {
+                std::wcout << L"Exception creating InputInjector: " << ex.message().c_str() << std::endl;
+                std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
             }
         }
     }
@@ -456,92 +506,95 @@ private:
     }
 
     void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
-        if (!touchInitialized) return;
+        if (!inputInjectorInitialized || !inputInjector) return;
         
-        POINTER_TOUCH_INFO touchInfo;
-        memset(&touchInfo, 0, sizeof(POINTER_TOUCH_INFO));
-        
-        // Get screen coordinates (in pixels)
-        LONG touchX, touchY;
-        getTouchCoordinates(stickX, stickY, touchX, touchY);
-        
-        // Initialize pointer info
-        touchInfo.pointerInfo.pointerType = PT_TOUCH;
-        touchInfo.pointerInfo.pointerId = touchId;
-        touchInfo.pointerInfo.ptPixelLocation.x = touchX;
-        touchInfo.pointerInfo.ptPixelLocation.y = touchY;
-        
-        // Set pointer flags
-        if (isDown) {
-            touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
-        } else if (isUp) {
-            touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_UP;
-        } else {
-            touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
-        }
-        
-        // Set touch-specific fields - minimal setup to avoid ERROR_INVALID_PARAMETER
-        touchInfo.touchFlags = TOUCH_FLAG_NONE;
-        touchInfo.touchMask = TOUCH_MASK_CONTACTAREA | TOUCH_MASK_ORIENTATION | TOUCH_MASK_PRESSURE;
-        touchInfo.orientation = 90; // Standard orientation
-        touchInfo.pressure = 32000; // Medium pressure
-        
-        // Get DPI for proper HIMETRIC conversion
-        HDC screenDC = GetDC(nullptr);
-        int dpiX = GetDeviceCaps(screenDC, LOGPIXELSX);
-        int dpiY = GetDeviceCaps(screenDC, LOGPIXELSY);
-        ReleaseDC(nullptr, screenDC);
-        
-        // Contact area in HIMETRIC (hundredths of millimeter)
-        // 10mm x 10mm contact area (typical finger size)
-        int contactHimetric = 1000; // 10mm = 1000 hundredths of mm
-        
-        LONG himetricX = (touchX * 2540) / dpiX;
-        LONG himetricY = (touchY * 2540) / dpiY;
-        
-        touchInfo.pointerInfo.ptHimetricLocation.x = himetricX;
-        touchInfo.pointerInfo.ptHimetricLocation.y = himetricY;
-        
-        // Set contact area - ensure left < right and top < bottom
-        int halfContact = contactHimetric / 2;
-        touchInfo.rcContact.left = himetricX - halfContact;
-        touchInfo.rcContact.right = himetricX + halfContact;
-        touchInfo.rcContact.top = himetricY - halfContact;
-        touchInfo.rcContact.bottom = himetricY + halfContact;
-        
-        // Raw contact area (same as contact area)
-        touchInfo.rcContactRaw = touchInfo.rcContact;
-        
-        BOOL result = InjectTouchInput(1, &touchInfo);
-        if (!result) {
-            DWORD error = GetLastError();
-            static int errorCount = 0;
+        try {
+            // Get screen coordinates (in pixels)
+            LONG touchX, touchY;
+            getTouchCoordinates(stickX, stickY, touchX, touchY);
             
-            // Only print first 3 errors to avoid spam
-            if (errorCount < 3) {
-                std::cout << "Touch injection failed, error: " << error << " (touchId: " << touchId << ")" << std::endl;
-                std::cout << "  Pixel: (" << touchX << ", " << touchY << ") | HIMETRIC: (" << himetricX << ", " << himetricY << ")" << std::endl;
-                std::cout << "  Flags: " << touchInfo.pointerInfo.pointerFlags << std::endl;
-                
-                if (error == 87) {
-                    std::cout << "  ERROR_INVALID_PARAMETER - possible causes:" << std::endl;
-                    std::cout << "  1. Windows doesn't support touch injection (needs Windows 8+)" << std::endl;
-                    std::cout << "  2. Running in compatibility mode" << std::endl;
-                    std::cout << "  3. No touch drivers installed" << std::endl;
-                    std::cout << "  Try: Run as Administrator or use ControllerToMouse.exe instead" << std::endl;
-                } else if (error == 5) {
-                    std::cout << "  ERROR_ACCESS_DENIED - try running as Administrator" << std::endl;
-                }
-                errorCount++;
-                if (errorCount >= 3) {
-                    std::cout << "  (Further errors suppressed - consider using ControllerToMouse.exe)" << std::endl;
+            // Create touch info using UWP API (C++/WinRT)
+            // In C++/WinRT: getter = Property(), setter = Property(value)
+            InjectedInputTouchInfo touchInfo{};
+            
+            // Create pixel location structure
+            InjectedInputPoint pixelLocation{};
+            pixelLocation.PositionX = touchX;
+            pixelLocation.PositionY = touchY;
+            
+            // Create pointer info structure
+            InjectedInputPointerInfo pointerInfo{};
+            pointerInfo.PointerId = touchId;
+            pointerInfo.PixelLocation = pixelLocation;
+            
+            // Set pointer options/flags (direct assignment for struct fields)
+            if (isDown) {
+                pointerInfo.PointerOptions =
+                    InjectedInputPointerOptions::PointerDown |
+                    InjectedInputPointerOptions::InContact |
+                    InjectedInputPointerOptions::InRange |
+                    InjectedInputPointerOptions::New;
+            } else if (isUp) {
+                pointerInfo.PointerOptions = InjectedInputPointerOptions::PointerUp;
+            } else {
+                pointerInfo.PointerOptions =
+                    InjectedInputPointerOptions::Update |
+                    InjectedInputPointerOptions::InContact |
+                    InjectedInputPointerOptions::InRange;
+            }
+            
+            // InjectedInputTouchInfo uses setter methods (not direct assignment)
+            touchInfo.PointerInfo(pointerInfo);
+            
+            // Set touch parameters (using setter methods)
+            touchInfo.Pressure(1.0);  // Full pressure
+            touchInfo.TouchParameters(
+                InjectedInputTouchParameters::Pressure |
+                InjectedInputTouchParameters::Contact
+            );
+            
+            // Set contact area (30x30 pixels - finger-sized)
+            InjectedInputRectangle contactArea{};
+            contactArea.Left = 15;
+            contactArea.Top = 15;
+            contactArea.Bottom = 15;
+            contactArea.Right = 15;
+            touchInfo.Contact(contactArea);
+            
+            // Create collection and inject
+            std::vector<InjectedInputTouchInfo> touchData;
+            touchData.push_back(touchInfo);
+            
+            inputInjector.InjectTouchInput(touchData);
+            
+            static bool firstSuccess = true;
+            if (firstSuccess && isDown) {
+                std::cout << "UWP Touch injection working! Touch " << touchId << " at (" << touchX << ", " << touchY << ")" << std::endl;
+                std::cout << "Multi-touch enabled with 2 independent touch points!" << std::endl;
+                std::cout << "\nIMPORTANT: Position the overlay circle over your game window!" << std::endl;
+                std::cout << "Touches are sent to the center of the overlay circle." << std::endl;
+                firstSuccess = false;
+            }
+            
+            // Debug: Print every 10th touch to show it's working
+            static int touchCount = 0;
+            if (isDown || isUp) {
+                touchCount++;
+                if (touchCount % 5 == 0) {
+                    std::cout << "Touch " << touchId << (isDown ? " DOWN" : (isUp ? " UP" : " MOVE")) 
+                             << " at screen (" << touchX << ", " << touchY << ")" << std::endl;
                 }
             }
-        } else {
-            static bool firstSuccess = true;
-            if (firstSuccess) {
-                std::cout << "Touch injection working! First touch at (" << touchX << ", " << touchY << ")" << std::endl;
-                firstSuccess = false;
+            
+        } catch (hresult_error const& ex) {
+            static int errorCount = 0;
+            if (errorCount < 3) {
+                std::wcout << L"Touch injection failed: " << ex.message().c_str() << std::endl;
+                std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+                errorCount++;
+                if (errorCount >= 3) {
+                    std::cout << "(Further errors suppressed)" << std::endl;
+                }
             }
         }
     }
@@ -992,16 +1045,10 @@ private:
     }
 
     void updateDebugInfo(double lAngle, double rAngle, int lDirection, int rDirection, const DIJOYSTATE* diState = nullptr) {
-        static DWORD lastUpdate = 0;
-        DWORD currentTime = GetTickCount();
+        // Update debug info every frame (no throttling) to match overlay refresh rate
         
-        // Only update every 200ms
-        if (currentTime - lastUpdate < 200) {
-            return;
-        }
-        lastUpdate = currentTime;
-        
-        std::string info = "=== SIMPLE CONTROLLER ===\r\n";
+        std::string info = "=== CONTROLLER TO TOUCH ===\r\n";
+        info += "Version: UWP Multi-Touch\r\n";
         info += "Controller Type: " + std::string(hasXInputController ? "XInput" : "DirectInput") + "\r\n\r\n";
         
         if (hasXInputController) {
@@ -1032,15 +1079,16 @@ private:
         
         info += getButtonDebugInfo(diState);
         
-        info += "ACTIVE KEYS:\r\n";
-        info += "Left: " + lCurrentKey + " (" + (lHaveKey ? "ON" : "OFF") + ")\r\n";
-        info += "Right: " + rCurrentKey + " (" + (rHaveKey ? "ON" : "OFF") + ")\r\n\r\n";
+        info += "TOUCH STATUS:\r\n";
+        info += "Left Touch: " + std::string(leftTouchActive ? "ACTIVE" : "inactive") + "\r\n";
+        info += "Right Touch: " + std::string(rightTouchActive ? "ACTIVE" : "inactive") + "\r\n\r\n";
         
-        info += "DIRECTION MAPPING:\r\n";
-        info += "0 = Up-Right,1 = Right-Up, 2 = Right-Down, 3 = Down-Right\r\n";
-        info += "4 = Down-Left, 5 = Left-Down, 6 = Left-Up, 7 = Up-Left\r\n";
+        info += "SHORTCUTS:\r\n";
+        info += "Ctrl+Shift+` = Toggle debug info\r\n";
+        info += "Ctrl+Alt+Shift+` = Restart program\r\n";
 
-        SetWindowTextA(editControl, info.c_str());
+        // Store debug info for overlay rendering
+        debugText = info;
     }
 
 private:
@@ -1142,6 +1190,38 @@ public:
                     return; // Return immediately from run() method
                 }
             }
+
+            // Check keyboard shortcuts
+            static bool prevTogglePressed = false;
+            static bool prevRestartPressed = false;
+            
+            // Ctrl + Shift + ` = Toggle debug info
+            bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            bool backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0; // ` key
+            
+            bool togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
+            bool restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+            
+            // Toggle debug on key press (not hold)
+            if (togglePressed && !prevTogglePressed) {
+                showDebugInfo = !showDebugInfo;
+                std::cout << "Debug info " << (showDebugInfo ? "enabled" : "disabled") << std::endl;
+                if (overlayHwnd) {
+                    RedrawWindow(overlayHwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOFRAME);
+                }
+            }
+            
+            // Restart program on key press
+            if (restartPressed && !prevRestartPressed) {
+                std::cout << "Restart requested via keyboard shortcut" << std::endl;
+                PostQuitMessage(0);
+                return;
+            }
+            
+            prevTogglePressed = togglePressed;
+            prevRestartPressed = restartPressed;
 
             // Process controller (always, regardless of focus)
             bool controllerSuccess = false;
@@ -1262,9 +1342,12 @@ int main() {
     freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
     freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
     
-    std::cout << "Simple Controller to Maimai" << std::endl;
+    std::cout << "=== CONTROLLER TO TOUCH ===" << std::endl;
+    std::cout << "Version: UWP Multi-Touch (No hardware required!)" << std::endl;
+    std::cout << "Bumpers trigger independent touch points 0 and 1" << std::endl;
     std::cout << "Close the program by closing the console" << std::endl;
-    std::cout << "Closing the GUI will restart the program" << std::endl;
+    std::cout << "Ctrl+Shift+` = Toggle debug info | Ctrl+Alt+Shift+` = Restart" << std::endl;
+    std::cout << std::endl;
 
     while (true) {
     try {
@@ -1287,8 +1370,9 @@ int main() {
             freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
             freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
             
-            std::cout << "Simple Controller to Maimai" << std::endl;
-            std::cout << "Debug: Check this console for key simulation errors" << std::endl;
+            std::cout << "=== CONTROLLER TO TOUCH ===" << std::endl;
+            std::cout << "Version: UWP Multi-Touch" << std::endl;
+            std::cout << "Ctrl+Shift+` = Toggle debug info | Ctrl+Alt+Shift+` = Restart" << std::endl;
             
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

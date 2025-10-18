@@ -380,7 +380,7 @@ private:
         // Modulate pen width based on alpha for fade effect (thinner when faint)
         int penWidth = 2 + (alpha * 8 / 255); // 2-10 pixels
         
-        // Draw the arc along the main circle boundary - use full color
+        // Draw the arc along the main circle boundary - use full bright color for vibrancy
         HPEN arcPen = CreatePen(PS_SOLID, penWidth, color);
         HPEN oldPen = (HPEN)SelectObject(hdc, arcPen);
         HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
@@ -411,11 +411,10 @@ private:
         int indicatorX = centerX + (int)(stickX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
         int indicatorY = centerY - (int)(stickY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
         
-        // Create colored pen for the edge with modulated width - use full color
+        // Create colored pen for the edge with modulated width - use full bright color
         HPEN indicatorPen = CreatePen(PS_SOLID, penWidth, color);
+        HPEN oldPen = (HPEN)SelectObject(hdc, indicatorPen);
         HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        
-        SelectObject(hdc, indicatorPen);
         
         Ellipse(hdc,
                 indicatorX - OVERLAY_STICK_INDICATOR_RADIUS,
@@ -423,6 +422,7 @@ private:
                 indicatorX + OVERLAY_STICK_INDICATOR_RADIUS,
                 indicatorY + OVERLAY_STICK_INDICATOR_RADIUS);
         
+        SelectObject(hdc, oldPen);
         SelectObject(hdc, oldBrush);
         DeleteObject(indicatorPen);
     }
