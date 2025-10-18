@@ -1,3 +1,36 @@
+/*
+ * ============================================
+ * CONTROLLER INPUT MAPPER
+ * ============================================
+ * 
+ * A unified controller input mapper supporting three modes:
+ *   1. Touch Mode - Multi-touch input for Sentakki (osu!lazer)
+ *   2. Mouse Mode - Cursor control + left click
+ *   3. Keyboard Mode - Number keys 1-8 based on stick direction
+ * 
+ * Features:
+ *   - Works with XInput (Xbox) and DirectInput controllers
+ *   - Beautiful full-screen overlay with smooth fading
+ *   - On-screen debug UI (toggle with Ctrl+Shift+`)
+ *   - Portable - no installation needed
+ *   - Works on any Windows 10/11 PC
+ * 
+ * Technical:
+ *   - Touch mode uses UWP InputInjector (no touch hardware needed!)
+ *   - Mouse/Keyboard use standard SendInput
+ *   - DirectInput + XInput support for maximum compatibility
+ *   - GDI for overlay rendering
+ * 
+ * To Build:
+ *   Run build.bat (requires Visual Studio 2022)
+ *   Or manually: cl /EHsc /std:c++17 /await ControllerInput.cpp /link
+ *                dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib
+ *                msimg32.lib windowsapp.lib /out:ControllerInput.exe
+ * 
+ * Source File: ControllerInput.cpp (formerly ControllerToTouch.cpp)
+ */
+
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dinput.h>
 #include <XInput.h>
@@ -9,94 +42,121 @@
 #include <vector>
 #include <conio.h>
 
+// C++/WinRT includes for UWP InputInjector (Touch mode)
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.UI.Input.Preview.Injection.h>
+
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "xinput.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "windowsapp.lib")  // For UWP InputInjector
+
+using namespace winrt;
+using namespace Windows::UI::Input::Preview::Injection;
+
+// ============================================
+// ENUMS AND STRUCTURES
+// ============================================
 
 enum class ControllerType {
-    XInput,
-    DirectInput
+    XInput,       // Xbox controllers (Xbox 360, One, Series)
+    DirectInput   // Generic DirectInput controllers
+};
+
+enum class InputMode {
+    Touch,      // Multi-touch input using UWP InputInjector (for Sentakki)
+    Mouse,      // Mouse cursor control + left click
+    Keyboard    // Number keys 1-8 based on stick direction
 };
 
 struct ControllerInfo {
     ControllerType type;
     std::string name;
-    DWORD index;
-    GUID guid;
+    DWORD index;  // Used for XInput controllers
+    GUID guid;    // Used for DirectInput controllers
 };
+
+// ============================================
+// MAIN CONTROLLER CLASS
+// ============================================
 
 class SimpleController {
 private:
+    // ========== GUI Components ==========
     LPDIRECTINPUT8 di;
     LPDIRECTINPUTDEVICE8 joystick;
-    HWND hwnd;
-    HWND overlayHwnd;
-    std::string debugText; // Store debug info for overlay display
-    bool showDebugInfo; // Toggle debug info visibility
+    HWND hwnd;              // Main window (hidden)
+    HWND overlayHwnd;       // Full-screen transparent overlay
+    std::string debugText;  // Debug info displayed on overlay
+    bool showDebugInfo;     // Toggle debug panel visibility
     
-    // XInput support
+    // ========== Controller State ==========
     bool hasXInputController;
     DWORD xInputControllerIndex;
     XINPUT_STATE xInputState;
     
-    // Alternating frame counter for dual-stick mode
-    bool alternateFrame;
+    // ========== Overlay Visualization ==========
+    double overlayLeftX, overlayLeftY;      // Left stick (-1.0 to 1.0)
+    double overlayRightX, overlayRightY;    // Right stick (-1.0 to 1.0)
+    double overlayLeftAngle, overlayRightAngle;  // Angles in degrees
+    int overlayLeftAlpha, overlayRightAlpha;     // Fade alpha (0-255)
+    int overlayPosX, overlayPosY;           // Overlay screen position
+    int overlayStickRadius;                 // Circle radius in pixels
+    int updateIntervalMs;                   // Dynamic based on refresh rate
     
-    // Overlay stick positions (-1.0 to 1.0)
-    double overlayLeftX;
-    double overlayLeftY;
-    double overlayRightX;
-    double overlayRightY;
+    // ========== Input Mode State ==========
+    InputMode currentMode;  // Current operating mode (Touch/Mouse/Keyboard)
     
-    // Overlay stick angles (in degrees)
-    double overlayLeftAngle;
-    double overlayRightAngle;
+    // Touch mode state (UWP InputInjector)
+    bool leftTouchActive;
+    bool rightTouchActive;
+    InputInjector inputInjector;
+    bool inputInjectorInitialized;
     
-    // Alpha values for fading (0-255)
-    int overlayLeftAlpha;
-    int overlayRightAlpha;
+    // Mouse mode state
+    bool mouseButtonPressed;
+    bool alternateFrame;  // For dual-stick alternating mode
     
-    // Mouse control state
-    enum class MouseControlState {
-        None,
-        Left,
-        Right
-    };
-    MouseControlState mouseControlActive;
+    // Keyboard mode state (number keys 1-8)
+    std::string currentLeftKey;
+    std::string currentRightKey;
+    
+    // Shared button tracking
     bool prevLeftBumper;
     bool prevRightBumper;
-    int overlayPosX;  // Store overlay position for mouse mapping
-    int overlayPosY;
     
-    // Constants
+    // ========== Constants ==========
     static constexpr double PI = 3.14159265359;
     static constexpr int WINDOW_WIDTH = 480;
     static constexpr int WINDOW_HEIGHT = 640;
-    static constexpr int EDIT_PADDING = 2;
-    static constexpr int UPDATE_INTERVAL_MS = 200;
-    static constexpr int MAIN_LOOP_SLEEP_MS = 16;  // 60 FPS (1000ms / 60 = ~16ms)
-    static constexpr int SELECTION_SLEEP_MS = 4;
+    static constexpr int SELECTION_SLEEP_MS = 4;  // For controller selection menu
     static constexpr double STICK_MAX_VALUE = 32767.0;
     static constexpr double STICK_NORMALIZE_FACTOR = 32767.5;
-    static constexpr int DIRECTION_SECTORS = 8;
-    static constexpr double DEGREES_PER_SECTOR = 45.0;
-    int overlayStickRadius;
-    static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 15;
-    int updateIntervalMs; // Dynamic update interval based on screen refresh rate
+    static constexpr int DIRECTION_SECTORS = 8;  // 8 directional keys
+    static constexpr double DEGREES_PER_SECTOR = 45.0;  // 360° / 8 = 45°
+    static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 15;  // Pixel radius for stick indicators
 
 public:
-    SimpleController() : di(nullptr), joystick(nullptr), hwnd(nullptr), overlayHwnd(nullptr),
+    // ========== Constructor & Initialization ==========
+    
+    SimpleController(InputMode mode = InputMode::Touch) : di(nullptr), joystick(nullptr), hwnd(nullptr), overlayHwnd(nullptr),
                         hasXInputController(false), xInputControllerIndex(0),
-                        alternateFrame(false),
                         overlayLeftX(0.0), overlayLeftY(0.0), overlayRightX(0.0), overlayRightY(0.0),
                         overlayLeftAngle(-1.0), overlayRightAngle(-1.0), overlayStickRadius(150),
                         overlayLeftAlpha(0), overlayRightAlpha(0), updateIntervalMs(16),
-                        mouseControlActive(MouseControlState::None), prevLeftBumper(false), prevRightBumper(false),
-                        overlayPosX(0), overlayPosY(0), debugText(""), showDebugInfo(true) {
+                        currentMode(mode), leftTouchActive(false), rightTouchActive(false), 
+                        prevLeftBumper(false), prevRightBumper(false),
+                        overlayPosX(0), overlayPosY(0), inputInjector(nullptr), inputInjectorInitialized(false),
+                        mouseButtonPressed(false), alternateFrame(false), currentLeftKey(""), currentRightKey(""),
+                        debugText(""), showDebugInfo(true) {
         // Don't initialize controllers or create GUI in constructor
         // This will be done in the main loop
+        
+        // Initialize WinRT
+        init_apartment();
     }
     
     bool initialize() {
@@ -122,6 +182,8 @@ public:
     }
 
 private:
+    // ========== GUI Creation ==========
+    
     void createGUI() {
         // Register window class
         WNDCLASSEXA wc = {};
@@ -182,6 +244,7 @@ private:
         int overlayWidth = screenWidth; // Full screen width for debug text visibility
         
         // Calculate stick radius to fill most of the overlay (leave some padding)
+        // Use height as reference since width is now full-screen
         overlayStickRadius = (int)(overlayHeight * 0.45); // 45% of height (90% of half = radius)
         
         // Get screen refresh rate
@@ -230,6 +293,9 @@ private:
 
         ShowWindow(overlayHwnd, SW_SHOW);
         UpdateWindow(overlayHwnd);
+        
+        // Initialize touch injection
+        initializeTouchInjection();
     }
 
     static LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -314,46 +380,6 @@ private:
         }
     }
 
-    void drawDebugText(HDC hdc, RECT rect) {
-        // Overlay now spans full screen width starting at x=0
-        // So textX=20 means 20 pixels from left edge of screen
-        int textX = 20;
-        int textY = rect.bottom / 2 - 250; // Middle of overlay window (vertically centered on screen)
-        
-        // Ensure text is visible (not off-screen)
-        if (textY < 20) textY = 20;
-        
-        // Set up text rendering
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, RGB(255, 255, 255));
-        
-        // Create font for debug text
-        HFONT hFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                DEFAULT_PITCH | FF_DONTCARE, "Consolas");
-        HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
-        
-        // Split debug text into lines and render
-        std::string text = debugText;
-        size_t pos = 0;
-        int lineHeight = 18;
-        int currentY = textY;
-        
-        while ((pos = text.find("\r\n")) != std::string::npos) {
-            std::string line = text.substr(0, pos);
-            TextOutA(hdc, textX, currentY, line.c_str(), line.length());
-            currentY += lineHeight;
-            text.erase(0, pos + 2); // Remove "\r\n"
-        }
-        // Draw remaining text
-        if (!text.empty()) {
-            TextOutA(hdc, textX, currentY, text.c_str(), text.length());
-        }
-        
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
-    }
-
     void drawAngleIndicator(HDC hdc, int centerX, int centerY, double angle, COLORREF color, int alpha) {
         if (angle < 0 || alpha == 0) return; // No input detected or invisible
         
@@ -427,6 +453,253 @@ private:
         DeleteObject(indicatorPen);
     }
 
+    void drawDebugText(HDC hdc, RECT rect) {
+        // Position at bottom-left, 120px from bottom
+        int textX = 30;
+        int lineHeight = 24;
+        
+        // Calculate text height to position from bottom
+        int lineCount = 0;
+        std::string tempText = debugText;
+        size_t pos = 0;
+        while ((pos = tempText.find("\r\n")) != std::string::npos) {
+            lineCount++;
+            tempText.erase(0, pos + 2);
+        }
+        if (!tempText.empty()) lineCount++;
+        
+        int textHeight = lineCount * lineHeight;
+        int textY = rect.bottom - textHeight - 120; // 120px from bottom
+        
+        if (textY < 30) textY = 30; // Don't go too high
+        
+        // Create large, bold font for easy reading
+        HFONT hFont = CreateFont(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                DEFAULT_PITCH | FF_DONTCARE, "Consolas");
+        HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
+        
+        // Set up text rendering - no background, just clean text
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(255, 255, 255)); // White text
+        
+        // Render text lines
+        std::string text = debugText;
+        size_t textPos = 0;
+        int currentY = textY;
+        
+        while ((textPos = text.find("\r\n")) != std::string::npos) {
+            std::string line = text.substr(0, textPos);
+            TextOutA(hdc, textX, currentY, line.c_str(), line.length());
+            currentY += lineHeight;
+            text.erase(0, textPos + 2);
+        }
+        if (!text.empty()) {
+            TextOutA(hdc, textX, currentY, text.c_str(), text.length());
+        }
+        
+        SelectObject(hdc, oldFont);
+        DeleteObject(hFont);
+    }
+
+    // ========== Touch Mode (UWP InputInjector) ==========
+    
+    void initializeTouchInjection() {
+        if (!inputInjectorInitialized) {
+            try {
+                // Create UWP InputInjector - this should work WITHOUT touch hardware!
+                inputInjector = InputInjector::TryCreate();
+                
+                if (inputInjector) {
+                    // Initialize for touch input with NO visualization (prevents on-screen keyboard)
+                    inputInjector.InitializeTouchInjection(InjectedInputVisualizationMode::None);
+                    inputInjectorInitialized = true;
+                    std::cout << "UWP InputInjector initialized successfully!" << std::endl;
+                    std::cout << "Touch injection enabled (no on-screen keyboard)" << std::endl;
+                } else {
+                    std::cout << "Failed to create InputInjector - system may not support UWP input injection" << std::endl;
+                }
+            } catch (hresult_error const& ex) {
+                std::wcout << L"Exception creating InputInjector: " << ex.message().c_str() << std::endl;
+                std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+            }
+        }
+    }
+
+    void getTouchCoordinates(double stickX, double stickY, LONG& touchX, LONG& touchY) {
+        // Get the overlay window size
+        RECT overlayRect;
+        GetWindowRect(overlayHwnd, &overlayRect);
+        int overlayWidth = overlayRect.right - overlayRect.left;
+        int overlayHeight = overlayRect.bottom - overlayRect.top;
+        
+        // Calculate center of overlay
+        int centerX = overlayPosX + overlayWidth / 2;
+        int centerY = overlayPosY + overlayHeight / 2;
+        
+        // Map stick position (-1.0 to 1.0) to screen coordinates
+        touchX = centerX + (int)(stickX * overlayStickRadius);
+        touchY = centerY - (int)(stickY * overlayStickRadius); // Invert Y
+        
+        // Clamp to screen bounds to ensure valid coordinates
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        if (touchX < 0) touchX = 0;
+        if (touchX >= screenWidth) touchX = screenWidth - 1;
+        if (touchY < 0) touchY = 0;
+        if (touchY >= screenHeight) touchY = screenHeight - 1;
+    }
+
+    void pixelToHimetric(LONG pixelX, LONG pixelY, LONG& himetricX, LONG& himetricY) {
+        // Convert pixel coordinates to HIMETRIC (hundredths of a millimeter)
+        HDC screenDC = GetDC(nullptr);
+        int dpiX = GetDeviceCaps(screenDC, LOGPIXELSX);
+        int dpiY = GetDeviceCaps(screenDC, LOGPIXELSY);
+        ReleaseDC(nullptr, screenDC);
+        
+        // HIMETRIC calculation: (pixels * 2540) / DPI
+        himetricX = (pixelX * 2540) / dpiX;
+        himetricY = (pixelY * 2540) / dpiY;
+    }
+
+    void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
+        if (!inputInjectorInitialized || !inputInjector) return;
+        
+        try {
+            // Get screen coordinates (in pixels)
+            LONG touchX, touchY;
+            getTouchCoordinates(stickX, stickY, touchX, touchY);
+            
+            // Create touch info using UWP API (C++/WinRT)
+            // In C++/WinRT: getter = Property(), setter = Property(value)
+            InjectedInputTouchInfo touchInfo{};
+            
+            // Create pixel location structure
+            InjectedInputPoint pixelLocation{};
+            pixelLocation.PositionX = touchX;
+            pixelLocation.PositionY = touchY;
+            
+            // Create pointer info structure
+            InjectedInputPointerInfo pointerInfo{};
+            pointerInfo.PointerId = touchId;
+            pointerInfo.PixelLocation = pixelLocation;
+            
+            // Set pointer options/flags (direct assignment for struct fields)
+            if (isDown) {
+                pointerInfo.PointerOptions =
+                    InjectedInputPointerOptions::PointerDown |
+                    InjectedInputPointerOptions::InContact |
+                    InjectedInputPointerOptions::InRange |
+                    InjectedInputPointerOptions::New;
+            } else if (isUp) {
+                pointerInfo.PointerOptions = InjectedInputPointerOptions::PointerUp;
+            } else {
+                pointerInfo.PointerOptions =
+                    InjectedInputPointerOptions::Update |
+                    InjectedInputPointerOptions::InContact |
+                    InjectedInputPointerOptions::InRange;
+            }
+            
+            // InjectedInputTouchInfo uses setter methods (not direct assignment)
+            touchInfo.PointerInfo(pointerInfo);
+            
+            // Set touch parameters (using setter methods)
+            touchInfo.Pressure(1.0);  // Full pressure
+            touchInfo.TouchParameters(
+                InjectedInputTouchParameters::Pressure |
+                InjectedInputTouchParameters::Contact
+            );
+            
+            // Set contact area (30x30 pixels - finger-sized)
+            InjectedInputRectangle contactArea{};
+            contactArea.Left = 15;
+            contactArea.Top = 15;
+            contactArea.Bottom = 15;
+            contactArea.Right = 15;
+            touchInfo.Contact(contactArea);
+            
+            // Create collection and inject
+            std::vector<InjectedInputTouchInfo> touchData;
+            touchData.push_back(touchInfo);
+            
+            inputInjector.InjectTouchInput(touchData);
+            
+            static bool firstSuccess = true;
+            if (firstSuccess && isDown) {
+                std::cout << "UWP Touch injection working! Touch " << touchId << " at (" << touchX << ", " << touchY << ")" << std::endl;
+                std::cout << "Multi-touch enabled with 2 independent touch points!" << std::endl;
+                std::cout << "\nIMPORTANT: Position the overlay circle over your game window!" << std::endl;
+                std::cout << "Touches are sent to the center of the overlay circle." << std::endl;
+                firstSuccess = false;
+            }
+            
+            // Debug: Print every 10th touch to show it's working
+            static int touchCount = 0;
+            if (isDown || isUp) {
+                touchCount++;
+                if (touchCount % 5 == 0) {
+                    std::cout << "Touch " << touchId << (isDown ? " DOWN" : (isUp ? " UP" : " MOVE")) 
+                             << " at screen (" << touchX << ", " << touchY << ")" << std::endl;
+                }
+            }
+            
+        } catch (hresult_error const& ex) {
+            static int errorCount = 0;
+            if (errorCount < 3) {
+                std::wcout << L"Touch injection failed: " << ex.message().c_str() << std::endl;
+                std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+                errorCount++;
+                if (errorCount >= 3) {
+                    std::cout << "(Further errors suppressed)" << std::endl;
+                }
+            }
+        }
+    }
+
+    void handleTouchControl(bool leftBumper, bool rightBumper, double leftX, double leftY, double rightX, double rightY) {
+        // Detect button press edges
+        bool leftPressed = leftBumper && !prevLeftBumper;
+        bool rightPressed = rightBumper && !prevRightBumper;
+        bool leftReleased = !leftBumper && prevLeftBumper;
+        bool rightReleased = !rightBumper && prevRightBumper;
+        
+        // Handle left bumper - touch ID 0
+        if (leftPressed && !leftTouchActive) {
+            leftTouchActive = true;
+            sendTouch(0, leftX, leftY, true, false); // Touch down - only send once on press
+            std::cout << "Left bumper pressed: Sending Touch 0 DOWN" << std::endl;
+        } else if (leftTouchActive && leftBumper) {
+            sendTouch(0, leftX, leftY, false, false); // Touch move/update
+        }
+        
+        if (leftReleased && leftTouchActive) {
+            sendTouch(0, leftX, leftY, false, true); // Touch up
+            leftTouchActive = false;
+            std::cout << "Left bumper released: Sending Touch 0 UP" << std::endl;
+        }
+        
+        // Handle right bumper - touch ID 1
+        if (rightPressed && !rightTouchActive) {
+            rightTouchActive = true;
+            sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
+            std::cout << "Right bumper pressed: Sending Touch 1 DOWN" << std::endl;
+        } else if (rightTouchActive && rightBumper) {
+            sendTouch(1, rightX, rightY, false, false); // Touch move/update
+        }
+        
+        if (rightReleased && rightTouchActive) {
+            sendTouch(1, rightX, rightY, false, true); // Touch up
+            rightTouchActive = false;
+            std::cout << "Right bumper released: Sending Touch 1 UP" << std::endl;
+        }
+        
+        // Update previous button states
+        prevLeftBumper = leftBumper;
+        prevRightBumper = rightBumper;
+    }
+
+    // ========== Mouse Mode (SendInput) ==========
+    
     void moveMouseToCenter() {
         int screenWidth = GetSystemMetrics(SM_CXSCREEN);
         int screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -494,6 +767,132 @@ private:
         prevRightBumper = rightBumper;
     }
 
+    // ========== Keyboard Mode (SendInput) ==========
+    
+    int getKeyCode(const std::string& key) {
+        if (key == "1") return '1';
+        if (key == "2") return '2';
+        if (key == "3") return '3';
+        if (key == "4") return '4';
+        if (key == "5") return '5';
+        if (key == "6") return '6';
+        if (key == "7") return '7';
+        if (key == "8") return '8';
+        return 0;
+    }
+
+    void simulateKeyPress(int keyCode, bool isDown) {
+        INPUT input = {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = keyCode;
+        input.ki.dwFlags = isDown ? 0 : KEYEVENTF_KEYUP;
+        input.ki.wScan = MapVirtualKey(keyCode, MAPVK_VK_TO_VSC);
+        input.ki.dwExtraInfo = GetMessageExtraInfo();
+        SendInput(1, &input, sizeof(INPUT));
+    }
+
+    void sendKeyPress(const std::string& key, bool isDown) {
+        int keyCode = getKeyCode(key);
+        if (keyCode == 0) return;
+        simulateKeyPress(keyCode, isDown);
+    }
+
+    // ========== Cleanup (Release All Inputs) ==========
+    
+    void cleanup() {
+        // Release all keyboard keys (for Keyboard mode)
+        if (!currentLeftKey.empty()) {
+            sendKeyPress(currentLeftKey, false);
+            currentLeftKey = "";
+        }
+        if (!currentRightKey.empty()) {
+            sendKeyPress(currentRightKey, false);
+            currentRightKey = "";
+        }
+        
+        // Release all touch points
+        if (leftTouchActive) {
+            sendTouch(0, 0, 0, false, true); // Send touch up
+            leftTouchActive = false;
+        }
+        if (rightTouchActive) {
+            sendTouch(1, 0, 0, false, true); // Send touch up
+            rightTouchActive = false;
+        }
+        
+        // Release mouse button
+        if (mouseButtonPressed) {
+            sendMouseButton(false);
+            mouseButtonPressed = false;
+        }
+    }
+
+    void handleKeyboardControl(bool leftBumper, bool rightBumper, double leftX, double leftY, double rightX, double rightY) {
+        // Calculate angles and directions
+        double lAngle = calculateAngle(leftX, leftY);
+        double rAngle = calculateAngle(rightX, rightY);
+        int lDirection = getDirection(lAngle);
+        int rDirection = getDirection(rAngle);
+        
+        // Handle LEFT bumper + left stick
+        if (leftBumper && lDirection != -1) {
+            std::string newKey = std::to_string(lDirection + 1);
+            
+            // Check for conflict with right stick key
+            if (newKey == currentRightKey && !currentRightKey.empty()) {
+                // Conflict - release our key if we have one
+                if (!currentLeftKey.empty()) {
+                    sendKeyPress(currentLeftKey, false);
+                    currentLeftKey = "";
+                }
+                return;
+            }
+            
+            // Handle key change
+            if (currentLeftKey != newKey) {
+                if (!currentLeftKey.empty()) {
+                    sendKeyPress(currentLeftKey, false); // Release old
+                }
+                currentLeftKey = newKey;
+                sendKeyPress(currentLeftKey, true); // Press new
+            }
+        } else if (!currentLeftKey.empty()) {
+            // Bumper released or no direction - release key
+            sendKeyPress(currentLeftKey, false);
+            currentLeftKey = "";
+        }
+        
+        // Handle RIGHT bumper + right stick
+        if (rightBumper && rDirection != -1) {
+            std::string newKey = std::to_string(rDirection + 1);
+            
+            // Check for conflict with left stick key
+            if (newKey == currentLeftKey && !currentLeftKey.empty()) {
+                // Conflict - release our key if we have one
+                if (!currentRightKey.empty()) {
+                    sendKeyPress(currentRightKey, false);
+                    currentRightKey = "";
+                }
+                return;
+            }
+            
+            // Handle key change
+            if (currentRightKey != newKey) {
+                if (!currentRightKey.empty()) {
+                    sendKeyPress(currentRightKey, false); // Release old
+                }
+                currentRightKey = newKey;
+                sendKeyPress(currentRightKey, true); // Press new
+            }
+        } else if (!currentRightKey.empty()) {
+            // Bumper released or no direction - release key
+            sendKeyPress(currentRightKey, false);
+            currentRightKey = "";
+        }
+    }
+
+    // ========== Overlay Rendering ==========
+    
     void updateOverlay(double leftX, double leftY, double rightX, double rightY, double leftAngle, double rightAngle) {
         overlayLeftX = leftX;
         overlayLeftY = leftY;
@@ -540,7 +939,8 @@ private:
         if (pThis) {
             switch (uMsg) {
                 case WM_DESTROY:
-                    PostQuitMessage(0);
+                    // Don't call PostQuitMessage here - we handle it explicitly
+                    // Otherwise restart causes double WM_QUIT
                     return 0;
             }
         }
@@ -548,6 +948,8 @@ private:
         return DefWindowProc(hwnd, uMsg, wParam, lParam);
     }
 
+    // ========== Controller Initialization ==========
+    
     void initializeControllers() {
         // List all available controllers and let user choose
         std::vector<ControllerInfo> availableControllers = listAllControllers();
@@ -669,8 +1071,8 @@ private:
             return false;
         }
 
-        // Set data format
-        hr = joystick->SetDataFormat(&c_dfDIJoystick);
+        // Set data format - use DIJOYSTATE2 for extended axes (includes sliders for DS4 touchpad)
+        hr = joystick->SetDataFormat(&c_dfDIJoystick2);
         if (FAILED(hr)) {
             return false;
         }
@@ -727,8 +1129,8 @@ private:
             return false;
         }
 
-        // Set data format
-        hr = joystick->SetDataFormat(&c_dfDIJoystick);
+        // Set data format - use DIJOYSTATE2 for extended axes (includes sliders for DS4 touchpad)
+        hr = joystick->SetDataFormat(&c_dfDIJoystick2);
         if (FAILED(hr)) {
             logError("Failed to set data format: " + std::to_string(hr));
             return false;
@@ -759,6 +1161,8 @@ private:
         }
     }
 
+    // ========== Utility Functions ==========
+    
     /**
      * Calculate angle from stick coordinates with 0° = top, clockwise
      * @param x X coordinate (-1.0 to 1.0)
@@ -811,62 +1215,133 @@ private:
         return direction;
     }
 
-    void updateDebugInfo(double lAngle, double rAngle, int lDirection, int rDirection, const DIJOYSTATE* diState = nullptr) {
-        // Update debug info every frame (no throttling) to match overlay refresh rate
+    // ========== Debug Info Display ==========
+    
+    void updateDebugInfo(double lAngle, double rAngle, int lDirection, int rDirection, const DIJOYSTATE2* diState = nullptr) {
+        // Build debug info string based on current mode
+        // This is displayed on the overlay (bottom-left, large text)
         
-        std::string info = "=== CONTROLLER TO MOUSE ===\r\n";
-        info += "Version: Mouse + LMB Control\r\n";
-        info += "Mode: Alternating dual-stick support\r\n";
-        info += "Controller Type: " + std::string(hasXInputController ? "XInput" : "DirectInput") + "\r\n\r\n";
+        std::string info = "CONTROLLER INPUT MAPPER\r\n";
+        info += std::string(hasXInputController ? "XInput" : "DirectInput") + " | ";
         
-        if (hasXInputController) {
-            info += getXInputDebugInfo();
-        } else if (diState) {
-            info += getDirectInputDebugInfo(diState);
-        } else {
-            info += "DIRECTINPUT VALUES:\r\n";
-            info += "X: " + std::to_string(0) + "\r\n";
-            info += "Y: " + std::to_string(0) + "\r\n";
-            info += "Z: " + std::to_string(0) + "\r\n";
-            info += "R: " + std::to_string(0) + "\r\n\r\n";
-            
-            info += "NORMALIZED:\r\n";
-            info += "X: " + std::to_string(0) + "\r\n";
-            info += "Y: " + std::to_string(0) + "\r\n";
-            info += "Z: " + std::to_string(0) + "\r\n";
-            info += "R: " + std::to_string(0) + "\r\n\r\n";
-        }
-        
-        info += "ANGLES:\r\n";
-        info += "Left: " + std::to_string(lAngle) + "\r\n";
-        info += "Right: " + std::to_string(rAngle) + "\r\n\r\n";
-        
-        info += "DIRECTIONS:\r\n";
-        info += "Left: " + std::to_string(lDirection) + "\r\n";
-        info += "Right: " + std::to_string(rDirection) + "\r\n\r\n";
-        
-        info += getButtonDebugInfo(diState);
-        
-        info += "MOUSE CONTROL:\r\n";
-        bool leftPressed = prevLeftBumper;
-        bool rightPressed = prevRightBumper;
-        bool bothPressed = leftPressed && rightPressed;
-        
-        if (bothPressed) {
-            info += "Mode: Alternating between both sticks\r\n";
-            info += "Current frame: " + std::string(alternateFrame ? "Left stick" : "Right stick") + "\r\n";
-        } else if (leftPressed) {
-            info += "Mode: Left stick only\r\n";
-        } else if (rightPressed) {
-            info += "Mode: Right stick only\r\n";
-        } else {
-            info += "Mode: None (LMB released)\r\n";
+        // Show current mode
+        switch (currentMode) {
+            case InputMode::Touch:
+                info += "Touch Mode\r\n";
+                break;
+            case InputMode::Mouse:
+                info += "Mouse Mode\r\n";
+                break;
+            case InputMode::Keyboard:
+                info += "Keyboard Mode\r\n";
+                break;
         }
         info += "\r\n";
         
-        info += "SHORTCUTS:\r\n";
-        info += "Ctrl+Shift+` = Toggle debug info\r\n";
-        info += "Ctrl+Alt+Shift+` = Restart program\r\n";
+        // Mode-specific status
+        if (currentMode == InputMode::Touch) {
+            info += "TOUCH STATUS:\r\n";
+            info += "  Touch 0 (LB + L Stick): " + std::string(leftTouchActive ? "ACTIVE" : "---") + "\r\n";
+            if (leftTouchActive) {
+                // Get screen coordinates
+                LONG touchX, touchY;
+                getTouchCoordinates(overlayLeftX, overlayLeftY, touchX, touchY);
+                info += "    Screen: (" + std::to_string(touchX) + ", " + std::to_string(touchY) + ")\r\n";
+            }
+            info += "  Touch 1 (RB + R Stick): " + std::string(rightTouchActive ? "ACTIVE" : "---") + "\r\n";
+            if (rightTouchActive) {
+                LONG touchX, touchY;
+                getTouchCoordinates(overlayRightX, overlayRightY, touchX, touchY);
+                info += "    Screen: (" + std::to_string(touchX) + ", " + std::to_string(touchY) + ")\r\n";
+            }
+            info += "\r\n";
+            
+            // Stick positions
+            info += "STICK POSITIONS:\r\n";
+            char buf[64];
+            sprintf_s(buf, "  Left:  X=%.2f Y=%.2f\r\n", overlayLeftX, overlayLeftY);
+            info += buf;
+            sprintf_s(buf, "  Right: X=%.2f Y=%.2f\r\n", overlayRightX, overlayRightY);
+            info += buf;
+            info += "\r\n";
+            
+            // Bumpers
+            info += "BUMPERS:\r\n";
+            if (hasXInputController) {
+                info += "  LB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? "PRESSED" : "---") + "\r\n";
+                info += "  RB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? "PRESSED" : "---") + "\r\n\r\n";
+            } else if (diState) {
+                info += "  LB: " + std::string((diState->rgbButtons[4] & 0x80) ? "PRESSED" : "---") + "\r\n";
+                info += "  RB: " + std::string((diState->rgbButtons[5] & 0x80) ? "PRESSED" : "---") + "\r\n\r\n";
+            }
+        } else if (currentMode == InputMode::Mouse) {
+            info += "MOUSE CONTROL:\r\n";
+            bool leftPressed = prevLeftBumper;
+            bool rightPressed = prevRightBumper;
+            bool bothPressed = leftPressed && rightPressed;
+            
+            // Get current mouse position
+            POINT mousePos;
+            GetCursorPos(&mousePos);
+            info += "  Cursor: (" + std::to_string(mousePos.x) + ", " + std::to_string(mousePos.y) + ")\r\n";
+            
+            if (bothPressed) {
+                info += "  Mode: Alternating sticks\r\n";
+                info += "  Current: " + std::string(alternateFrame ? "Left" : "Right") + "\r\n";
+            } else if (leftPressed) {
+                info += "  Mode: Left stick\r\n";
+            } else if (rightPressed) {
+                info += "  Mode: Right stick\r\n";
+            } else {
+                info += "  Mode: Inactive\r\n";
+            }
+            info += "\r\n";
+            
+            // Stick positions
+            info += "STICK POSITIONS:\r\n";
+            char buf[64];
+            sprintf_s(buf, "  Left:  X=%.2f Y=%.2f\r\n", overlayLeftX, overlayLeftY);
+            info += buf;
+            sprintf_s(buf, "  Right: X=%.2f Y=%.2f\r\n", overlayRightX, overlayRightY);
+            info += buf;
+            info += "\r\n";
+        } else if (currentMode == InputMode::Keyboard) {
+            info += "KEYBOARD (1-8):\r\n";
+            info += "  L Stick Key: " + (currentLeftKey.empty() ? std::string("---") : currentLeftKey) + "\r\n";
+            info += "  R Stick Key: " + (currentRightKey.empty() ? std::string("---") : currentRightKey) + "\r\n";
+            info += "\r\n";
+            
+            // Show stick details for keyboard mode
+            info += "STICK POSITIONS:\r\n";
+            char buf[64];
+            sprintf_s(buf, "  Left:  X=%.2f Y=%.2f\r\n", overlayLeftX, overlayLeftY);
+            info += buf;
+            sprintf_s(buf, "  Right: X=%.2f Y=%.2f\r\n", overlayRightX, overlayRightY);
+            info += buf;
+            info += "\r\n";
+            
+            info += "ANGLES:\r\n";
+            if (lAngle >= 0) {
+                sprintf_s(buf, "  Left:  %.1f°\r\n", lAngle);
+                info += buf;
+            } else {
+                info += "  Left:  ---\r\n";
+            }
+            if (rAngle >= 0) {
+                sprintf_s(buf, "  Right: %.1f°\r\n", rAngle);
+                info += buf;
+            } else {
+                info += "  Right: ---\r\n";
+            }
+            info += "\r\n";
+            
+            info += "DIRECTIONS:\r\n";
+            info += "  Left:  " + (lDirection >= 0 ? std::to_string(lDirection + 1) : std::string("---")) + "\r\n";
+            info += "  Right: " + (rDirection >= 0 ? std::to_string(rDirection + 1) : std::string("---")) + "\r\n";
+            info += "\r\n";
+        }
+        
+        info += "Ctrl+Shift+` = Toggle | Ctrl+Alt+Shift+` = Restart\r\n";
 
         // Store debug info for overlay rendering
         debugText = info;
@@ -882,38 +1357,26 @@ private:
     }
     
     std::string getXInputDebugInfo() {
-        std::string info = "XINPUT VALUES:\r\n";
-        info += "Left Stick X: " + std::to_string(xInputState.Gamepad.sThumbLX) + "\r\n";
-        info += "Left Stick Y: " + std::to_string(xInputState.Gamepad.sThumbLY) + "\r\n";
-        info += "Right Stick X: " + std::to_string(xInputState.Gamepad.sThumbRX) + "\r\n";
-        info += "Right Stick Y: " + std::to_string(xInputState.Gamepad.sThumbRY) + "\r\n\r\n";
-        
-        info += "NORMALIZED:\r\n";
-        info += "Left X: " + std::to_string(xInputState.Gamepad.sThumbLX / STICK_MAX_VALUE) + "\r\n";
-        info += "Left Y: " + std::to_string(xInputState.Gamepad.sThumbLY / STICK_MAX_VALUE) + "\r\n";
-        info += "Right X: " + std::to_string(xInputState.Gamepad.sThumbRX / STICK_MAX_VALUE) + "\r\n";
-        info += "Right Y: " + std::to_string(xInputState.Gamepad.sThumbRY / STICK_MAX_VALUE) + "\r\n\r\n";
+        std::string info = "STICK VALUES:\r\n";
+        info += "  Left X: " + std::to_string(xInputState.Gamepad.sThumbLX) + "\r\n";
+        info += "  Left Y: " + std::to_string(xInputState.Gamepad.sThumbLY) + "\r\n";
+        info += "  Right X: " + std::to_string(xInputState.Gamepad.sThumbRX) + "\r\n";
+        info += "  Right Y: " + std::to_string(xInputState.Gamepad.sThumbRY) + "\r\n\r\n";
         
         return info;
     }
     
-    std::string getDirectInputDebugInfo(const DIJOYSTATE* diState) {
-        std::string info = "DIRECTINPUT VALUES:\r\n";
-        info += "X: " + std::to_string(diState->lX) + "\r\n";
-        info += "Y: " + std::to_string(diState->lY) + "\r\n";
-        info += "Z: " + std::to_string(diState->lZ) + "\r\n";
-        info += "R: " + std::to_string(diState->lRz) + "\r\n\r\n";
-        
-        info += "NORMALIZED:\r\n";
-        info += "X: " + std::to_string((diState->lX / STICK_NORMALIZE_FACTOR) - 1.0) + "\r\n";
-        info += "Y: " + std::to_string(1.0 - (diState->lY / STICK_NORMALIZE_FACTOR)) + "\r\n";
-        info += "Z: " + std::to_string((diState->lZ / STICK_NORMALIZE_FACTOR) - 1.0) + "\r\n";
-        info += "R: " + std::to_string(1.0 - (diState->lRz / STICK_NORMALIZE_FACTOR)) + "\r\n\r\n";
+    std::string getDirectInputDebugInfo(const DIJOYSTATE2* diState) {
+        std::string info = "STICK VALUES:\r\n";
+        info += "  Left X: " + std::to_string(diState->lX) + "\r\n";
+        info += "  Left Y: " + std::to_string(diState->lY) + "\r\n";
+        info += "  Right X: " + std::to_string(diState->lZ) + "\r\n";
+        info += "  Right Y: " + std::to_string(diState->lRz) + "\r\n\r\n";
         
         return info;
     }
     
-    std::string getButtonDebugInfo(const DIJOYSTATE* diState) {
+    std::string getButtonDebugInfo(const DIJOYSTATE2* diState) {
         std::string info = "BUTTONS:\r\n";
         if (hasXInputController) {
             info += "Left Shoulder: " + std::to_string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? 1 : 0) + "\r\n";
@@ -946,10 +1409,20 @@ private:
     }
 
 public:
+    // ========== Main Application Loop ==========
+    
     /**
      * Main application loop - processes controller input and updates GUI
-     * Handles both XInput and DirectInput controllers
-     * Updates debug information and manages key simulation
+     * Handles both XInput and DirectInput controllers based on selected mode
+     * 
+     * Modes:
+     *   - Touch: LB/RB + sticks = Touch points 0/1
+     *   - Mouse: Bumpers + sticks = Cursor control + LMB
+     *   - Keyboard: LB/RB + sticks = Number keys 1-8
+     * 
+     * Keyboard shortcuts:
+     *   - Ctrl+Shift+` = Toggle debug UI
+     *   - Ctrl+Alt+Shift+` = Restart (return to mode selection)
      */
     void run() {
         if (!hwnd || (!joystick && !hasXInputController)) {
@@ -958,6 +1431,51 @@ public:
         }
         
         // Keep console visible throughout the process
+        
+        // Clear keyboard state completely to prevent restart flag persistence
+        for (int i = 0; i < 10; i++) {
+            GetAsyncKeyState(VK_CONTROL);
+            GetAsyncKeyState(VK_SHIFT);
+            GetAsyncKeyState(VK_MENU);
+            GetAsyncKeyState(VK_OEM_3);
+            Sleep(20);
+        }
+        
+        // Wait for physical keys to be released
+        int waitCount = 0;
+        while (waitCount < 100) { // Max 5 seconds
+            bool anyKeyHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || 
+                              (GetAsyncKeyState(VK_SHIFT) & 0x8000) || 
+                              (GetAsyncKeyState(VK_MENU) & 0x8000) || 
+                              (GetAsyncKeyState(VK_OEM_3) & 0x8000);
+            
+            if (!anyKeyHeld) break;
+            
+            Sleep(50);
+            waitCount++;
+        }
+        
+        // Additional delay for safety
+        Sleep(200);
+        
+        // Clear ALL leftover messages from previous instance
+        MSG clearMsg;
+        while (PeekMessage(&clearMsg, nullptr, 0, 0, PM_REMOVE)) {
+            // Silently discard all leftover messages
+        }
+
+        // Check current keyboard state and initialize prev states to match
+        bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+        bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+        bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+        bool backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+        
+        bool togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
+        bool restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+        
+        // Initialize prev states to CURRENT state to prevent first-frame trigger
+        bool prevTogglePressed = togglePressed;
+        bool prevRestartPressed = restartPressed;
 
         MSG msg = {};
         while (true) {
@@ -966,24 +1484,19 @@ public:
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
                 if (msg.message == WM_QUIT) {
-                    std::cout << "WM_QUIT received - window closing..." << std::endl;
-                    std::cout << "Breaking from run() method..." << std::endl;
+                    cleanup(); // Release all inputs before exiting
                     return; // Return immediately from run() method
                 }
             }
 
             // Check keyboard shortcuts
-            static bool prevTogglePressed = false;
-            static bool prevRestartPressed = false;
+            ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
             
-            // Ctrl + Shift + ` = Toggle debug info
-            bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-            bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-            bool backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0; // ` key
-            
-            bool togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
-            bool restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+            togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
+            restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
             
             // Toggle debug on key press (not hold)
             if (togglePressed && !prevTogglePressed) {
@@ -994,9 +1507,10 @@ public:
                 }
             }
             
-            // Restart program on key press
+            // Restart program on key press (not hold)
             if (restartPressed && !prevRestartPressed) {
-                std::cout << "Restart requested via keyboard shortcut" << std::endl;
+                std::cout << "Restarting..." << std::endl;
+                cleanup(); // Release all inputs before restarting
                 PostQuitMessage(0);
                 return;
             }
@@ -1028,9 +1542,9 @@ public:
                     joyR = xInputState.Gamepad.sThumbRY / STICK_MAX_VALUE;   // Right stick Y (not inverted for XInput)
                 }
             } else if (joystick) {
-                // Process DirectInput controller
-            DIJOYSTATE state;
-            HRESULT hr = joystick->GetDeviceState(sizeof(DIJOYSTATE), &state);
+                // Process DirectInput controller - use DIJOYSTATE2 for extended axes
+            DIJOYSTATE2 state;
+            HRESULT hr = joystick->GetDeviceState(sizeof(DIJOYSTATE2), &state);
             
             // If device lost, try to reacquire
             if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
@@ -1080,26 +1594,38 @@ public:
                 int lDirection = getDirection(lAngle);
                 int rDirection = getDirection(rAngle);
 
-                // Handle mouse control - first bumper controls mouse + LMB
-                handleMouseControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
-
+                // Handle input based on current mode
+                switch (currentMode) {
+                    case InputMode::Touch:
+                        handleTouchControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
+                        break;
+                    case InputMode::Mouse:
+                        handleMouseControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
+                        break;
+                    case InputMode::Keyboard:
+                        handleKeyboardControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
+                        break;
+                }
+                
                 // Update overlay with stick positions and angles
                 updateOverlay(joyX, joyY, joyZ, joyR, lAngle, rAngle);
 
-                // Update debug info
-                if (hasXInputController) {
-                    updateDebugInfo(lAngle, rAngle, lDirection, rDirection);
-                } else if (joystick) {
-                    // For DirectInput, we need to get the state again for debug info
-                    DIJOYSTATE debugState;
-                    HRESULT debugHr = joystick->GetDeviceState(sizeof(DIJOYSTATE), &debugState);
-                    if (SUCCEEDED(debugHr)) {
-                        updateDebugInfo(lAngle, rAngle, lDirection, rDirection, &debugState);
+                // Update debug info (only if visible for efficiency)
+                if (showDebugInfo) {
+                    if (hasXInputController) {
+                        updateDebugInfo(lAngle, rAngle, lDirection, rDirection);
+                    } else if (joystick) {
+                        // For DirectInput, we need to get the state again for debug info
+                        DIJOYSTATE2 debugState;
+                        HRESULT debugHr = joystick->GetDeviceState(sizeof(DIJOYSTATE2), &debugState);
+                        if (SUCCEEDED(debugHr)) {
+                            updateDebugInfo(lAngle, rAngle, lDirection, rDirection, &debugState);
+                        } else {
+                            updateDebugInfo(lAngle, rAngle, lDirection, rDirection);
+                        }
                     } else {
                         updateDebugInfo(lAngle, rAngle, lDirection, rDirection);
                     }
-                } else {
-                    updateDebugInfo(lAngle, rAngle, lDirection, rDirection);
                 }
             } else {
                 // Try to reacquire DirectInput if needed
@@ -1117,54 +1643,86 @@ public:
     }
 };
 
+// ============================================
+// MAIN ENTRY POINT
+// ============================================
+
 int main() {
     // Allocate console for debug output
     AllocConsole();
     freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
     freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
     
-    std::cout << "=== CONTROLLER TO MOUSE ===" << std::endl;
-    std::cout << "Version: Mouse + LMB Control" << std::endl;
-    std::cout << "One bumper: Mouse follows that stick + holds LMB" << std::endl;
-    std::cout << "Both bumpers: Mouse alternates between sticks every frame + holds LMB" << std::endl;
-    std::cout << "Close the program by closing the console" << std::endl;
-    std::cout << "Ctrl+Shift+` = Toggle debug info | Ctrl+Alt+Shift+` = Restart" << std::endl;
-    std::cout << std::endl;
-
+    // Main loop: Show mode selection → Run app → On restart, loop back
     while (true) {
+        // ========== Mode Selection Menu ==========
+        std::cout << "========================================" << std::endl;
+        std::cout << "    CONTROLLER INPUT MAPPER" << std::endl;
+        std::cout << "========================================" << std::endl;
+        std::cout << std::endl;
+        std::cout << "Choose input mode:" << std::endl;
+        std::cout << std::endl;
+        std::cout << "  [1] Touch Mode (Multi-touch for Sentakki)" << std::endl;
+        std::cout << "      - 2 independent touch points" << std::endl;
+        std::cout << "      - LB + Left Stick = Touch 0" << std::endl;
+        std::cout << "      - RB + Right Stick = Touch 1" << std::endl;
+        std::cout << std::endl;
+        std::cout << "  [2] Mouse Mode (Cursor + Click)" << std::endl;
+        std::cout << "      - Right stick = mouse cursor" << std::endl;
+        std::cout << "      - Bumpers = left click" << std::endl;
+        std::cout << std::endl;
+        std::cout << "  [3] Keyboard Mode (Number keys 1-8)" << std::endl;
+        std::cout << "      - Both sticks = directional keys 1-8" << std::endl;
+        std::cout << "      - Perfect for lane-based rhythm games" << std::endl;
+        std::cout << std::endl;
+        std::cout << "Select mode (1-3): ";
+        
+        InputMode selectedMode = InputMode::Touch; // Default
+        char choice = _getch();
+        std::cout << choice << std::endl << std::endl;
+        
+        switch (choice) {
+            case '1':
+                selectedMode = InputMode::Touch;
+                std::cout << "Starting in TOUCH mode..." << std::endl;
+                break;
+            case '2':
+                selectedMode = InputMode::Mouse;
+                std::cout << "Starting in MOUSE mode..." << std::endl;
+                break;
+            case '3':
+                selectedMode = InputMode::Keyboard;
+                std::cout << "Starting in KEYBOARD mode..." << std::endl;
+                break;
+            default:
+                std::cout << "Invalid choice. Please select 1, 2, or 3." << std::endl;
+                std::cout << std::endl;
+                continue; // Go back to mode selection
+        }
+        
+        std::cout << "Close the program by closing the console" << std::endl;
+        std::cout << "Ctrl+Shift+` = Toggle debug info | Ctrl+Alt+Shift+` = Restart" << std::endl;
+        std::cout << std::endl;
+
     try {
-        SimpleController app;
+        SimpleController app(selectedMode);
             if (!app.initialize()) {
                 std::cerr << "[ERROR] Failed to initialize application!" << std::endl;
                 continue;
             }
             app.run();
             
-            // If we get here, the window was closed
-            std::cout << std::endl;
-            std::cout << "=== WINDOW CLOSED ===" << std::endl;
-            std::cout << "Window closed. Returning to controller selection..." << std::endl;
-
-            
-            // Reinitialize console completely to fix text handling
-            FreeConsole();
-            AllocConsole();
-            freopen_s((FILE**)stdout, "CONOUT$", "w", stdout);
-            freopen_s((FILE**)stderr, "CONOUT$", "w", stderr);
-            
-            std::cout << "=== CONTROLLER TO MOUSE ===" << std::endl;
-            std::cout << "Version: Mouse + LMB Control" << std::endl;
-            std::cout << "One bumper: Mouse follows that stick | Both: Alternates every frame" << std::endl;
-            std::cout << "Ctrl+Shift+` = Toggle debug info | Ctrl+Alt+Shift+` = Restart" << std::endl;
+            // If we get here, the window was closed (restart requested)
+            // Loop back to mode selection menu
             
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
             std::cerr << "Press any key to continue or Ctrl+C to exit..." << std::endl;
             _getch();
+            std::cout << std::endl;
         }
         
-        // Continue to next iteration to restart controller selection
-        // This happens after both try and catch blocks
+        // Loop back to show mode selection menu again
     }
 
     FreeConsole();

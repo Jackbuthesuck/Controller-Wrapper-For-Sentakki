@@ -1,162 +1,253 @@
-# Controller Input Wrapper for Sentakki
+# Controller Input Mapper for Sentakki
 
-A C++ controller input wrapper that maps analog sticks to keyboard, mouse, or **TRUE MULTI-TOUCH** inputs with a real-time visual overlay. Designed for playing Sentakki (osu! lazer mod) and potentially other touch-based games with similar control schemes.
+A unified C++ controller input mapper with three modes: **Multi-Touch**, **Mouse**, and **Keyboard**. With real-time visual overlay and works with any XInput or DirectInput controller.
+
+Designed for playing Sentakki (osu! lazer mod) and other game if control somehow apply.
 
 Built with Cursor AI assistance.
 
-## Available Versions
+---
 
-### ControllerToTouch.exe ⭐ (RECOMMENDED)
-**TRUE multi-touch support using Windows UWP InputInjector API!**
+## Features
 
+**Mode Selection at Startup**
+```
+[1] Touch Mode - Multi-touch for Sentakki
+[2] Mouse Mode - Cursor + click control  
+[3] Keyboard Mode - Number keys 1-8
+```
+
+### **Mode 1: Touch (Multi-Touch)** ⭐
+- **TRUE multi-touch** using Windows UWP InputInjector API
 - **No touch hardware required!** Works on any Windows 10/11 PC
 - **2 independent touch points** - Both sticks work simultaneously
-- Left Bumper + Left Stick = Touch point 0
-- Right Bumper + Right Stick = Touch point 1
-- **Auto-requests Administrator privileges**
+- LB + Left Stick = Touch point 0
+- RB + Right Stick = Touch point 1
 
-**Important:** Enable touch input in your game's settings (osu! → Settings → Input → Touch → Enable)
+### **Mode 2: Mouse (Cursor + Click)**
+- both stick controls where the cursor will be
+- Either bumper = Left mouse button held
+- Both bumpers = Alternates between sticks every frame
+- Mouse returns to center when released
 
-### ControllerToMouse.exe  
-Maps controller inputs to mouse cursor position with left-click.
+### **Mode 3: Keyboard (Number Keys 1-8)**
+- Both sticks map to directional keys 1-8
+- LB + Left Stick = Keys based on left stick angle
+- RB + Right Stick = Keys based on right stick angle
+- Keys switch dynamically as you rotate
+- Conflict prevention when both sticks point same direction
 
-- One bumper: Mouse follows that stick + holds LMB
-- Both bumpers: Mouse alternates between stick positions every frame
-- Mouse returns to screen center when released
-- Position is used to decide where the cursor will be
+### **Visual Overlay (All Modes):**
+- **Smooth fading effects** - Appears only when sticks move
+- **Real-time stick visualization** (Blue = left, Pink = right)
+- **Angle indicators** - Arc segments showing direction
+- **Variable pen widths** - Thicker as sticks move from center
+- **Full-screen overlay** - Transparent, click-through
+- **Dynamic refresh rate** - Matches your monitor
+- **Smart debug UI** - Shows mode-specific info (toggle with Ctrl+Shift+`)
 
-Limited to single cursor (Windows limitation).
+---
 
-### ControllerToNumberKeys.exe
-Maps controller inputs to keyboard number keys (1-8) based on stick direction.
+## Quick Start
 
-- Both bumpers trigger number keys based on stick angle
-- Keys dynamically switch as you rotate the stick
-- Prevents both sticks from pressing the same key simultaneously
-- Angle is used to decide what button to press
+### **Download & Run (Portable!)**
 
-**Note:** Set button mapping to 1-8 in Sentakki settings for proper key detection.
+**Just double-click `ControllerInput.exe` - that's it!**
 
+No installation, drivers, or DLLs needed. Works on any Windows 10/11 PC.
 
-## Visual Overlay
+**Requirements:**
+- Windows 10 or 11
+- XInput or DirectInput compatible controller
+- (Optional) Run as admin if Touch mode doesn't work
 
-All versions include a beautiful transparent overlay showing:
+**Ssu! lazer setting**
+Enable touch input: Settings → Input → Touch → Enable
+100% Ui Scaling only
 
-- **Smooth fading effects** - Overlay only appears when sticks are moved
-- **Real-time stick positions** (Blue = left stick, Pink = right stick)
-- **Angle indicators** - Arc segments showing stick direction
-- **Variable pen widths** - Get thicker as sticks move further from center
-- **On-screen debug UI** - Toggle with Ctrl+Shift+` (enabled by default)
-- **Full-screen overlay** - Spans entire screen for better visibility
-- **Dynamic refresh rate** - Matches your monitor's refresh rate
+---
 
-## Requirements
+## 🎮 How to Use
 
-### To Run (Portable!):
-- **Windows 10 or 11** (Touch version requires Windows 10+)
-- **XInput or DirectInput compatible controller**
-- **That's it!** No installation, drivers, or DLLs needed. Just run the .exe!
+### **1. Start the Program**
+Run `ControllerInput.exe` and select your mode:
+- Press **1** for Touch mode
+- Press **2** for Mouse mode
+- Press **3** for Keyboard mode
 
-### To Build from Source:
+### **2. Select Controller**
+Choose your controller from the list (XInput or DirectInput)
+
+### **3. Play!**
+The overlay appears - the position and size is hard coded as of now. and may only work with 100% osu ui scale
+
+### **Controls:**
+
+**Touch Mode:**
+- **Left Stick** + Hold **LB**  → Touch point 0
+- **Right Stick** + Hold **RLB** → Touch point 1
+- Both work simultaneously for true multi-touch!
+
+**Mouse Mode:**
+-  Hold **LB** → Mouse follows left stick
+- Hold **RB** → Mouse follows right stick  
+- Hold **both** → Mouse alternates between sticks
+- Release → Mouse returns to center
+
+**Keyboard Mode:**
+- **Left Stick** + Hold **LB** → Number keys 1-8
+- **Right Stick** + Hold **RB** → Number keys 1-8
+- Keys map to 8 directions (45° sectors)
+
+**Keyboard Shortcuts (All Modes):**
+- `Ctrl+Shift+Tilde` (the key to the left of 1 and above tab on a qwerty keyboard) → Toggle debug info
+- `Ctrl+Alt+Shift+Tilde` → Restart (return to mode selection)
+- Close console → Exit program
+
+---
+
+## 🔧 Building from Source
+
+### **Requirements:**
 - Visual Studio 2022 with C++ Desktop Development
-- Windows 10 SDK (includes C++/WinRT for Touch version)
+- Windows 10 SDK (includes C++/WinRT)
 
-## Building
-
-Run the build script to compile all three versions:
+### **Build:**
 ```bash
 build.bat
 ```
 
-This compiles:
-- `ControllerToNumberKeys.exe`
-- `ControllerToMouse.exe`  
-- `Touch Version\ControllerToTouch.exe`
+This compiles `ControllerInput.exe` from `ControllerInput.cpp`.
 
-All executables are **fully portable** - copy to any Windows 10/11 PC and run!
+**Manual build:**
+```bash
+cl /EHsc /std:c++17 /await ControllerInput.cpp /link dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib msimg32.lib windowsapp.lib /out:ControllerInput.exe
+```
 
-## Usage
+**All executables are fully portable** - copy to any Windows 10/11 PC and run!
 
-1. **Run the program** (ControllerToTouch.exe recommended!)
-2. **Allow admin privileges** when prompted (Touch version only)
-3. **Select your controller** from the menu
-4. **Don't forget to enable touch in osu!** (for Touch version)
-5. The overlay appears automatically
+---
 
-### Controls
+## 🛡️ Security & Antivirus
 
-**ControllerToTouch (Multi-Touch):**
-- Hold **Left Bumper** + move **Left Stick** → Touch point 0
-- Hold **Right Bumper** + move **Right Stick** → Touch point 1
-- **Both bumpers work simultaneously** for true multi-touch!
-- Position the overlay over your game window for accurate touch placement
+### **Why might this get flagged?**
+- ⚠️ Uses input injection APIs (SendInput, UWP InputInjector)
+- ⚠️ Unsigned executable
+- ⚠️ Simulates keyboard/mouse/touch (similar to legitimate automation tools)
 
-**ControllerToNumberKeys:**
-- Hold bumper + move stick → Triggers keys 1-8 based on direction
-- Keys switch as you rotate the stick
-- Left Bumper uses left stick angle, Right Bumper uses right stick
+### **Is it safe?**
+✅ **100% Open Source** - All code is visible and auditable  
+✅ **No network activity** - Doesn't send data anywhere  
+✅ **No persistence** - Doesn't install or modify system  
+✅ **Clean build** - Compiled with official Microsoft tools 
+✅ **Portable** - Single exe, no hidden files  
 
-**ControllerToMouse:**
-- Hold one bumper → Mouse follows that stick, LMB held
-- Hold both bumpers → Mouse alternates between sticks every frame
-- Release all → Mouse returns to center
+### **If flagged by antivirus:**
+1. **Add to exclusions** - Safest for personal use
+2. **Build from source** - Review code and compile yourself
+3. **Virus scan the source** - Upload to VirusTotal if concerned
 
-**Keyboard Shortcuts (All Versions):**
-- `Ctrl+Shift+` ` → Toggle debug info overlay
-- `Ctrl+Alt+Shift+` ` → Restart program
-- Close console window → Exit program
+---
 
+## 📋 Technical Details
 
-## Technical Details
+### **Input APIs:**
+- **Touch Mode:** Windows UWP InputInjector (C++/WinRT)
+  - Enables touch injection without physical touch hardware
+  - Works on any Windows 10/11 PC
+  - No admin required (contrary to old SendInput touch APIs)
+  
+- **Mouse/Keyboard Modes:** SendInput API
+  - Standard Windows input simulation
+  - Compatible with most games
+  
+- **Controller Support:** DirectInput 8 + XInput 1.4
+  - Auto-detects Xbox and generic controllers
+  - Controller selection menu at startup
 
-### Input APIs:
-- **Touch Version:** Windows UWP InputInjector API (C++/WinRT)
-  - Enables touch injection without physical hardware
-- **Number Keys/Mouse Versions:** DirectInput 8 + XInput 1.4
-  - SendInput API for keyboard simulation
-  - Mouse events for cursor control
+### **Rendering:**
+- **GDI** for overlay with alpha blending
+- **Layered windows** with color key transparency
+- **Variable pen widths** for smooth fading
+- **Dynamic refresh rate** matching screen (60Hz+)
+- **Full-screen overlay** - Click-through, transparent
 
-### Rendering:
-- GDI for overlay rendering with alpha blending
-- Layered windows with color key transparency
-- Variable pen widths for smooth fading effects
-- Dynamic update rate matching screen refresh (60Hz+)
+### **Architecture:**
+- Single executable with mode selection
+- Clean state management with restart support
+- Efficient: Debug info only updates when visible
+- Memory safe: Proper cleanup on mode switch
 
-### Features:
-- Auto-detects both XInput and DirectInput devices
-- Controller selection menu at startup
-- Click-through transparent overlay
-- Controller hot-swapping via restart function
+---
 
-## Portability
+## 📦 Portability
 
-**All programs are 100% portable!** 
+**ControllerInput.exe is 100% portable!**
 
-Each `.exe` file is **completely self-contained** and will work anywhere:
+- ✅ **No installation** - Just run the .exe
+- ✅ **No external DLLs** - Only uses Windows system libraries
+- ✅ **No configuration files** - Self-contained
+- ✅ **No registry changes**
+- ✅ **Works anywhere** - Copy to USB, cloud, or share directly
+- ✅ **No admin required** - (Touch mode works without it!)
 
-- ✅ No installation needed - just copy and run
-- ✅ No external DLLs required - only uses Windows system libraries
-- ✅ No configuration files - standalone executable
-- ✅ No registry modifications
-- ✅ Works on any Windows 10/11 PC
-- ✅ Copy to USB drive, cloud storage, or share directly
+**Just copy `ControllerInput.exe` to any Windows 10/11 PC and run!**
 
-**Touch version additional requirements:**
-- Windows 10 or later (uses UWP InputInjector API)
-- Administrator privileges (automatically requested on launch)
-- Target application must have touch input enabled
+---
 
-## Notes
+## 📝 Notes
 
-**Development:**
+### **Development:**
 - Built entirely with Cursor AI assistance
 - Tested with DualShock 4 and Xbox 360 controllers
 - Works with any XInput or DirectInput compatible controller
+- Open source - feel free to modify!
 
-**Compatibility:**
-- ✅ osu! lazer / Sentakki (primary target - confirmed working!)
-- ✅ Other touch-based rhythm games with similar controls (e.g., maimai-style games)
-- ⚠️ Some anti-cheat games may block synthetic input
+### **Compatibility:**
+- ✅ **osu! lazer / Sentakki** (primary target - confirmed working!)
+- ✅ **Other touch/rhythm games** (maimai-style games)
+- ✅ **General purpose** - Use for any game needing controller mapping
+- ⚠️ **Anti-cheat games** - Some may block synthetic input
 
-**Author Note:**
+### **Removed Features:**
+- DS4 touchpad support was attempted but removed due to hardware/driver conflicts
+- Legacy separate executables (ControllerToNumberKeys.exe, ControllerToMouse.exe) - now integrated into one program
+
+### **Known Limitations:**
+- Mouse mode limited to single cursor (Windows limitation)
+- Touch injection may not work in some sandboxed apps
+- Some games require specific input modes to be enabled
+
+---
+
+---
+
+## 🙏 Credits
+
+**Author Note:**  
 Most of the code is written by Cursor AI, as I don't know C++ at all!
+
+**Special thanks to:**
+- Sentakki community for cool mod
+- Nutch for telling UWP InputInjector API exist
+
+---
+
+## 📄 License
+
+**MIT License** - Copyright (c) 2025 Jackbuthesuck
+
+This means you can:
+- Use it for free (personal or commercial)
+- Modify it however you want
+- Share it with anyone
+- Include it in your own projects
+- Sell software that uses it
+
+**The only requirements:**
+- Keep the copyright notice if you share the code
+- Don't blame me if something breaks (no warranty!)
+
+**TL;DR:** Do whatever you want with it, just don't sue me
+
+For the full legal text, see: https://opensource.org/licenses/MIT
