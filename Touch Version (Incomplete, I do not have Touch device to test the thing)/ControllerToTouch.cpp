@@ -12,6 +12,8 @@
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "dxguid.lib")
 #pragma comment(lib, "xinput.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "msimg32.lib")
 
 enum class ControllerType {
     XInput,
@@ -31,6 +33,7 @@ private:
     LPDIRECTINPUTDEVICE8 joystick;
     HWND hwnd;
     HWND editControl;
+    HWND overlayHwnd;
     
     // XInput support
     bool hasXInputController;
@@ -42,23 +45,54 @@ private:
     bool lHaveKey;
     bool rHaveKey;
     
+    // Overlay stick positions (-1.0 to 1.0)
+    double overlayLeftX;
+    double overlayLeftY;
+    double overlayRightX;
+    double overlayRightY;
+    
+    // Overlay stick angles (in degrees)
+    double overlayLeftAngle;
+    double overlayRightAngle;
+    
+    // Alpha values for fading (0-255)
+    int overlayLeftAlpha;
+    int overlayRightAlpha;
+    
+    // Touch control state
+    bool leftTouchActive;
+    bool rightTouchActive;
+    bool prevLeftBumper;
+    bool prevRightBumper;
+    int overlayPosX;  // Store overlay position for touch mapping
+    int overlayPosY;
+    bool touchInitialized;
+    
     // Constants
     static constexpr double PI = 3.14159265359;
     static constexpr int WINDOW_WIDTH = 480;
     static constexpr int WINDOW_HEIGHT = 640;
     static constexpr int EDIT_PADDING = 2;
     static constexpr int UPDATE_INTERVAL_MS = 200;
-    static constexpr int MAIN_LOOP_SLEEP_MS = 16;
+    static constexpr int MAIN_LOOP_SLEEP_MS = 16;  // 60 FPS (1000ms / 60 = ~16ms)
     static constexpr int SELECTION_SLEEP_MS = 4;
     static constexpr double STICK_MAX_VALUE = 32767.0;
     static constexpr double STICK_NORMALIZE_FACTOR = 32767.5;
     static constexpr int DIRECTION_SECTORS = 8;
     static constexpr double DEGREES_PER_SECTOR = 45.0;
+    int overlayStickRadius;
+    static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 15;
+    int updateIntervalMs; // Dynamic update interval based on screen refresh rate
 
 public:
-    SimpleController() : di(nullptr), joystick(nullptr), hwnd(nullptr), editControl(nullptr),
+    SimpleController() : di(nullptr), joystick(nullptr), hwnd(nullptr), editControl(nullptr), overlayHwnd(nullptr),
                         hasXInputController(false), xInputControllerIndex(0),
-                        lCurrentKey("null"), rCurrentKey("null"), lHaveKey(false), rHaveKey(false) {
+                        lCurrentKey("null"), rCurrentKey("null"), lHaveKey(false), rHaveKey(false),
+                        overlayLeftX(0.0), overlayLeftY(0.0), overlayRightX(0.0), overlayRightY(0.0),
+                        overlayLeftAngle(-1.0), overlayRightAngle(-1.0), overlayStickRadius(150),
+                        overlayLeftAlpha(0), overlayRightAlpha(0), updateIntervalMs(16),
+                        leftTouchActive(false), rightTouchActive(false), prevLeftBumper(false), prevRightBumper(false),
+                        overlayPosX(0), overlayPosY(0), touchInitialized(false) {
         // Don't initialize controllers or create GUI in constructor
         // This will be done in the main loop
     }
@@ -76,6 +110,9 @@ public:
         }
         if (di) {
             di->Release();
+        }
+        if (overlayHwnd) {
+            DestroyWindow(overlayHwnd);
         }
         if (hwnd) {
             DestroyWindow(hwnd);
@@ -126,6 +163,454 @@ private:
 
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
+        
+        // Create the overlay window
+        createOverlay();
+    }
+
+    void createOverlay() {
+        // Register overlay window class
+        WNDCLASSEXA overlayWc = {};
+        overlayWc.cbSize = sizeof(WNDCLASSEXA);
+        overlayWc.style = CS_OWNDC; // Own DC for better performance, remove redraw flags
+        overlayWc.lpfnWndProc = OverlayWindowProc;
+        overlayWc.hInstance = GetModuleHandle(nullptr);
+        overlayWc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        overlayWc.hbrBackground = (HBRUSH)GetStockObject(NULL_BRUSH); // Transparent background
+        overlayWc.lpszClassName = "StickOverlay";
+
+        RegisterClassExA(&overlayWc);
+
+        // Get screen dimensions
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        
+        // Calculate overlay size - 90% of screen height, make it square
+        int overlayHeight = (int)(screenHeight * 0.9);
+        int overlayWidth = overlayHeight; // Make it square
+        
+        // Calculate stick radius to fill most of the overlay (leave some padding)
+        overlayStickRadius = (int)(overlayHeight * 0.45); // 45% of height (90% of half = radius)
+        
+        // Get screen refresh rate
+        HDC screenDC = GetDC(nullptr);
+        int refreshRate = GetDeviceCaps(screenDC, VREFRESH);
+        ReleaseDC(nullptr, screenDC);
+        
+        // Calculate update interval based on refresh rate
+        if (refreshRate > 1) {
+            updateIntervalMs = 1000 / refreshRate;
+            std::cout << "Detected screen refresh rate: " << refreshRate << "Hz" << std::endl;
+            std::cout << "Setting update interval to: " << updateIntervalMs << "ms" << std::endl;
+        } else {
+            // Fallback to 60Hz if detection fails
+            updateIntervalMs = 16;
+            std::cout << "Could not detect refresh rate, defaulting to 60Hz (16ms)" << std::endl;
+        }
+        
+        // Center the overlay on screen
+        int posX = (screenWidth - overlayWidth) / 2;
+        int posY = (screenHeight - overlayHeight) / 2;
+        
+        // Store overlay position for mouse mapping
+        overlayPosX = posX;
+        overlayPosY = posY;
+        
+        // Create transparent overlay window (always on top, click-through, no activation)
+        overlayHwnd = CreateWindowExA(
+            WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+            "StickOverlay",
+            "Stick Position Overlay",
+            WS_POPUP,
+            posX, posY,
+            overlayWidth, overlayHeight,
+            nullptr, nullptr, GetModuleHandle(nullptr), this
+        );
+
+        if (!overlayHwnd) {
+            logError("Failed to create overlay window!");
+            return;
+        }
+
+        // Set transparency - make black (RGB(0,0,0)) completely transparent
+        // This way only the drawn graphics are visible, not the background
+        SetLayeredWindowAttributes(overlayHwnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
+
+        ShowWindow(overlayHwnd, SW_SHOW);
+        UpdateWindow(overlayHwnd);
+        
+        // Initialize touch injection
+        initializeTouchInjection();
+    }
+
+    static LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+        SimpleController* pThis = nullptr;
+
+        if (uMsg == WM_NCCREATE) {
+            CREATESTRUCT* pCreate = (CREATESTRUCT*)lParam;
+            pThis = (SimpleController*)pCreate->lpCreateParams;
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pThis);
+        } else {
+            pThis = (SimpleController*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+        }
+
+        if (pThis) {
+            switch (uMsg) {
+                case WM_PAINT: {
+                    PAINTSTRUCT ps;
+                    HDC hdc = BeginPaint(hwnd, &ps);
+                    pThis->drawOverlay(hdc);
+                    EndPaint(hwnd, &ps);
+                    return 0;
+                }
+                case WM_ERASEBKGND:
+                    return 1; // We handle background ourselves
+            }
+        }
+
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
+
+    void drawOverlay(HDC hdc) {
+        RECT rect;
+        GetClientRect(overlayHwnd, &rect);
+        
+        // Clear the window - make it completely transparent
+        // Fill with a color that we'll make transparent
+        HBRUSH clearBrush = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(hdc, &rect, clearBrush);
+        DeleteObject(clearBrush);
+        
+        // Calculate center position - both sticks in the same location
+        int centerX = rect.right / 2;
+        int centerY = rect.bottom / 2;
+        
+        // Draw angle indicators first (so they appear behind the stick indicators)
+        drawAngleIndicator(hdc, centerX, centerY, overlayLeftAngle, RGB(100, 150, 255), overlayLeftAlpha);
+        drawAngleIndicator(hdc, centerX, centerY, overlayRightAngle, RGB(255, 100, 150), overlayRightAlpha);
+        
+        // Draw both sticks at the same position (they will overlap)
+        // Draw left stick (blue)
+        drawStick(hdc, centerX, centerY, overlayLeftX, overlayLeftY, RGB(100, 150, 255), overlayLeftAlpha);
+        
+        // Draw right stick (pink)
+        drawStick(hdc, centerX, centerY, overlayRightX, overlayRightY, RGB(255, 100, 150), overlayRightAlpha);
+    }
+
+    void drawAngleIndicator(HDC hdc, int centerX, int centerY, double angle, COLORREF color, int alpha) {
+        if (angle < 0 || alpha == 0) return; // No input detected or invisible
+        
+        // Extract RGB components
+        int r = GetRValue(color);
+        int g = GetGValue(color);
+        int b = GetBValue(color);
+        
+        // Create blended color based on alpha (blend with black background)
+        int blendR = (r * alpha) / 255;
+        int blendG = (g * alpha) / 255;
+        int blendB = (b * alpha) / 255;
+        COLORREF blendedColor = RGB(blendR, blendG, blendB);
+        
+        // Draw an arc along the main boundary circle
+        double arcSpan = 45.0; // Arc spans 45 degrees (22.5 degrees on each side)
+        
+        // Calculate start and end angles for the arc
+        double arcStartAngle = angle - arcSpan / 2.0;
+        double arcEndAngle = angle + arcSpan / 2.0;
+        
+        // Convert to radians (standard math: 0° = right, counter-clockwise)
+        double startRad = (90 - arcStartAngle) * PI / 180.0;
+        double endRad = (90 - arcEndAngle) * PI / 180.0;
+        
+        // Calculate arc endpoints on the boundary circle
+        int startX = centerX + (int)(cos(startRad) * overlayStickRadius);
+        int startY = centerY - (int)(sin(startRad) * overlayStickRadius);
+        int endX = centerX + (int)(cos(endRad) * overlayStickRadius);
+        int endY = centerY - (int)(sin(endRad) * overlayStickRadius);
+        
+        // Draw the arc along the main circle boundary
+        HPEN arcPen = CreatePen(PS_SOLID, 10, blendedColor);
+        HPEN oldPen = (HPEN)SelectObject(hdc, arcPen);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        
+        // Use Arc function to draw along the boundary circle
+        Arc(hdc,
+            centerX - overlayStickRadius, centerY - overlayStickRadius,
+            centerX + overlayStickRadius, centerY + overlayStickRadius,
+            endX, endY, startX, startY);
+        
+        SelectObject(hdc, oldPen);
+        SelectObject(hdc, oldBrush);
+        DeleteObject(arcPen);
+    }
+
+    void drawStick(HDC hdc, int centerX, int centerY, double stickX, double stickY, COLORREF color, int alpha) {
+        // Draw outer circle (boundary)
+        HPEN boundaryPen = CreatePen(PS_SOLID, 4, RGB(150, 150, 150));
+        HPEN oldPen = (HPEN)SelectObject(hdc, boundaryPen);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        
+        Ellipse(hdc, 
+                centerX - overlayStickRadius, 
+                centerY - overlayStickRadius,
+                centerX + overlayStickRadius, 
+                centerY + overlayStickRadius);
+        
+        // Draw center cross (larger)
+        MoveToEx(hdc, centerX - 15, centerY, nullptr);
+        LineTo(hdc, centerX + 15, centerY);
+        MoveToEx(hdc, centerX, centerY - 15, nullptr);
+        LineTo(hdc, centerX, centerY + 15);
+        
+        SelectObject(hdc, oldPen);
+        DeleteObject(boundaryPen);
+        
+        if (alpha == 0) return; // Don't draw position indicator if invisible
+        
+        // Extract RGB components and blend with black background
+        int r = GetRValue(color);
+        int g = GetGValue(color);
+        int b = GetBValue(color);
+        
+        int blendR = (r * alpha) / 255;
+        int blendG = (g * alpha) / 255;
+        int blendB = (b * alpha) / 255;
+        COLORREF blendedColor = RGB(blendR, blendG, blendB);
+        
+        // Draw stick position indicator - hollow circle with colored edge
+        int indicatorX = centerX + (int)(stickX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
+        int indicatorY = centerY - (int)(stickY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
+        
+        // Create colored pen for the edge and transparent brush
+        HPEN indicatorPen = CreatePen(PS_SOLID, 6, blendedColor);
+        
+        SelectObject(hdc, indicatorPen);
+        SelectObject(hdc, GetStockObject(NULL_BRUSH)); // Hollow/transparent interior
+        
+        Ellipse(hdc,
+                indicatorX - OVERLAY_STICK_INDICATOR_RADIUS,
+                indicatorY - OVERLAY_STICK_INDICATOR_RADIUS,
+                indicatorX + OVERLAY_STICK_INDICATOR_RADIUS,
+                indicatorY + OVERLAY_STICK_INDICATOR_RADIUS);
+        
+        SelectObject(hdc, oldBrush);
+        DeleteObject(indicatorPen);
+    }
+
+    void initializeTouchInjection() {
+        if (!touchInitialized) {
+            // Check if system supports touch
+            int touchSupport = GetSystemMetrics(SM_DIGITIZER);
+            if (touchSupport & NID_READY) {
+                std::cout << "System has digitizer support" << std::endl;
+            } else {
+                std::cout << "WARNING: System may not have touch digitizer hardware" << std::endl;
+                std::cout << "Touch injection may still work for software that accepts injected touches" << std::endl;
+            }
+            
+            // Try to initialize with max 10 touch points (more than we need)
+            if (InitializeTouchInjection(10, TOUCH_FEEDBACK_NONE)) {
+                touchInitialized = true;
+                std::cout << "Touch injection initialized successfully (max 10 touch points)" << std::endl;
+            } else {
+                DWORD error = GetLastError();
+                std::cout << "Failed to initialize touch injection, error: " << error << std::endl;
+            }
+        }
+    }
+
+    void getTouchCoordinates(double stickX, double stickY, LONG& touchX, LONG& touchY) {
+        // Get the overlay window size
+        RECT overlayRect;
+        GetWindowRect(overlayHwnd, &overlayRect);
+        int overlayWidth = overlayRect.right - overlayRect.left;
+        int overlayHeight = overlayRect.bottom - overlayRect.top;
+        
+        // Calculate center of overlay
+        int centerX = overlayPosX + overlayWidth / 2;
+        int centerY = overlayPosY + overlayHeight / 2;
+        
+        // Map stick position (-1.0 to 1.0) to screen coordinates
+        touchX = centerX + (int)(stickX * overlayStickRadius);
+        touchY = centerY - (int)(stickY * overlayStickRadius); // Invert Y
+        
+        // Clamp to screen bounds to ensure valid coordinates
+        int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+        int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+        if (touchX < 0) touchX = 0;
+        if (touchX >= screenWidth) touchX = screenWidth - 1;
+        if (touchY < 0) touchY = 0;
+        if (touchY >= screenHeight) touchY = screenHeight - 1;
+    }
+
+    void pixelToHimetric(LONG pixelX, LONG pixelY, LONG& himetricX, LONG& himetricY) {
+        // Convert pixel coordinates to HIMETRIC (hundredths of a millimeter)
+        HDC screenDC = GetDC(nullptr);
+        int dpiX = GetDeviceCaps(screenDC, LOGPIXELSX);
+        int dpiY = GetDeviceCaps(screenDC, LOGPIXELSY);
+        ReleaseDC(nullptr, screenDC);
+        
+        // HIMETRIC calculation: (pixels * 2540) / DPI
+        himetricX = (pixelX * 2540) / dpiX;
+        himetricY = (pixelY * 2540) / dpiY;
+    }
+
+    void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
+        if (!touchInitialized) return;
+        
+        POINTER_TOUCH_INFO touchInfo;
+        memset(&touchInfo, 0, sizeof(POINTER_TOUCH_INFO));
+        
+        // Get screen coordinates (in pixels)
+        LONG touchX, touchY;
+        getTouchCoordinates(stickX, stickY, touchX, touchY);
+        
+        // Initialize pointer info
+        touchInfo.pointerInfo.pointerType = PT_TOUCH;
+        touchInfo.pointerInfo.pointerId = touchId;
+        touchInfo.pointerInfo.ptPixelLocation.x = touchX;
+        touchInfo.pointerInfo.ptPixelLocation.y = touchY;
+        
+        // Convert to HIMETRIC for ptHimetricLocation
+        LONG himetricX, himetricY;
+        pixelToHimetric(touchX, touchY, himetricX, himetricY);
+        touchInfo.pointerInfo.ptHimetricLocation.x = himetricX;
+        touchInfo.pointerInfo.ptHimetricLocation.y = himetricY;
+        
+        // Set time stamp
+        touchInfo.pointerInfo.dwTime = GetTickCount();
+        
+        // Set pointer flags
+        if (isDown) {
+            touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        } else if (isUp) {
+            touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_UP;
+        } else {
+            touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
+        }
+        
+        // Set touch-specific fields - keep it minimal
+        touchInfo.touchFlags = TOUCH_FLAG_NONE;
+        touchInfo.touchMask = TOUCH_MASK_CONTACTAREA;
+        touchInfo.orientation = 0;
+        touchInfo.pressure = 0;
+        
+        // Set contact area in HIMETRIC units (not pixels!)
+        // Contact area is 4x4 pixels
+        int contactSizePixels = 2;
+        LONG leftH, topH, rightH, bottomH;
+        
+        pixelToHimetric(touchX - contactSizePixels, touchY - contactSizePixels, leftH, topH);
+        pixelToHimetric(touchX + contactSizePixels, touchY + contactSizePixels, rightH, bottomH);
+        
+        // Ensure proper ordering (left < right, top < bottom)
+        touchInfo.rcContact.left = (leftH < rightH) ? leftH : rightH;
+        touchInfo.rcContact.right = (leftH < rightH) ? rightH : leftH;
+        touchInfo.rcContact.top = (topH < bottomH) ? topH : bottomH;
+        touchInfo.rcContact.bottom = (topH < bottomH) ? bottomH : topH;
+        
+        // Set raw contact area (same as contact area in HIMETRIC)
+        touchInfo.rcContactRaw = touchInfo.rcContact;
+        
+        BOOL result = InjectTouchInput(1, &touchInfo);
+        if (!result) {
+            DWORD error = GetLastError();
+            static DWORD lastErrorPrint = 0;
+            static int errorCount = 0;
+            
+            // Only print first 5 errors to avoid spam
+            if (errorCount < 5) {
+                std::cout << "Touch injection failed, error: " << error << " (touchId: " << touchId << ")" << std::endl;
+                std::cout << "  Pixel Pos: (" << touchX << ", " << touchY << "), Flags: " << touchInfo.pointerInfo.pointerFlags << std::endl;
+                std::cout << "  Contact HIMETRIC: L=" << touchInfo.rcContact.left << " R=" << touchInfo.rcContact.right 
+                          << " T=" << touchInfo.rcContact.top << " B=" << touchInfo.rcContact.bottom << std::endl;
+                
+                if (error == 87) {
+                    std::cout << "  This might mean:" << std::endl;
+                    std::cout << "  - Your system doesn't have touch hardware/drivers" << std::endl;
+                    std::cout << "  - Touch injection is not supported on this Windows version" << std::endl;
+                    std::cout << "  - Try using ControllerToMouse.exe instead" << std::endl;
+                }
+                errorCount++;
+                if (errorCount >= 5) {
+                    std::cout << "  (Further touch errors will be suppressed)" << std::endl;
+                }
+            }
+        }
+    }
+
+    void handleTouchControl(bool leftBumper, bool rightBumper, double leftX, double leftY, double rightX, double rightY) {
+        // Detect button press edges
+        bool leftPressed = leftBumper && !prevLeftBumper;
+        bool rightPressed = rightBumper && !prevRightBumper;
+        bool leftReleased = !leftBumper && prevLeftBumper;
+        bool rightReleased = !rightBumper && prevRightBumper;
+        
+        // Handle left bumper - touch ID 0
+        if (leftPressed && !leftTouchActive) {
+            leftTouchActive = true;
+            sendTouch(0, leftX, leftY, true, false); // Touch down - only send once on press
+            std::cout << "Left bumper pressed: Sending Touch 0 DOWN" << std::endl;
+        } else if (leftTouchActive && leftBumper) {
+            sendTouch(0, leftX, leftY, false, false); // Touch move/update
+        }
+        
+        if (leftReleased && leftTouchActive) {
+            sendTouch(0, leftX, leftY, false, true); // Touch up
+            leftTouchActive = false;
+            std::cout << "Left bumper released: Sending Touch 0 UP" << std::endl;
+        }
+        
+        // Handle right bumper - touch ID 1
+        if (rightPressed && !rightTouchActive) {
+            rightTouchActive = true;
+            sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
+            std::cout << "Right bumper pressed: Sending Touch 1 DOWN" << std::endl;
+        } else if (rightTouchActive && rightBumper) {
+            sendTouch(1, rightX, rightY, false, false); // Touch move/update
+        }
+        
+        if (rightReleased && rightTouchActive) {
+            sendTouch(1, rightX, rightY, false, true); // Touch up
+            rightTouchActive = false;
+            std::cout << "Right bumper released: Sending Touch 1 UP" << std::endl;
+        }
+        
+        // Update previous button states
+        prevLeftBumper = leftBumper;
+        prevRightBumper = rightBumper;
+    }
+
+    void updateOverlay(double leftX, double leftY, double rightX, double rightY, double leftAngle, double rightAngle) {
+        overlayLeftX = leftX;
+        overlayLeftY = leftY;
+        overlayRightX = rightX;
+        overlayRightY = rightY;
+        overlayLeftAngle = leftAngle;
+        overlayRightAngle = rightAngle;
+        
+        // Calculate distance from center for left stick
+        double leftDistance = std::sqrt(leftX * leftX + leftY * leftY);
+        // Map 0.0-0.5 distance to 0-255 alpha (max opacity at 50% from center)
+        if (leftDistance >= 0.5) {
+            overlayLeftAlpha = 255;
+        } else {
+            overlayLeftAlpha = (int)((leftDistance / 0.5) * 255.0);
+        }
+        
+        // Calculate distance from center for right stick
+        double rightDistance = std::sqrt(rightX * rightX + rightY * rightY);
+        // Map 0.0-0.5 distance to 0-255 alpha (max opacity at 50% from center)
+        if (rightDistance >= 0.5) {
+            overlayRightAlpha = 255;
+        } else {
+            overlayRightAlpha = (int)((rightDistance / 0.5) * 255.0);
+        }
+        
+        if (overlayHwnd) {
+            // Use RedrawWindow for smoother updates without flicker
+            RedrawWindow(overlayHwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOFRAME);
+        }
     }
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -723,26 +1208,15 @@ public:
                 double lAngle = calculateAngle(joyX, joyY);
                 double rAngle = calculateAngle(joyZ, joyR);
 
-                // Get directions
+                // Get directions (for debug info)
                 int lDirection = getDirection(lAngle);
                 int rDirection = getDirection(rAngle);
 
-                // Handle button presses
-                if (leftButtonPressed && lDirection != -1) {
-                    leftRadialMenuHandler(lDirection);
-                } else if (lHaveKey) {
-                    simulateKeyPress(lCurrentKey, false);
-                    lHaveKey = false;
-                    lCurrentKey = "null";
-                }
+                // Handle touch control - both bumpers control independent touch points
+                handleTouchControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
 
-                if (rightButtonPressed && rDirection != -1) {
-                    rightRadialMenuHandler(rDirection);
-                } else if (rHaveKey) {
-                    simulateKeyPress(rCurrentKey, false);
-                    rHaveKey = false;
-                    rCurrentKey = "null";
-                }
+                // Update overlay with stick positions and angles
+                updateOverlay(joyX, joyY, joyZ, joyR, lAngle, rAngle);
 
                 // Update debug info
                 if (hasXInputController) {
@@ -768,7 +1242,7 @@ public:
                 }
             }
 
-            Sleep(MAIN_LOOP_SLEEP_MS); // ~60 FPS
+            Sleep(updateIntervalMs); // Match screen refresh rate
         }
         
         std::cout << "run() method ending..." << std::endl;

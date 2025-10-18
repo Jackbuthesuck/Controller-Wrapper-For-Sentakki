@@ -2,13 +2,14 @@
 
 This is a C++ port of the AutoHotkey script that maps game controller inputs to keyboard keys for playing Maimai in the Sentakki mod for Osu! lazer.
 
+This program is written with the help of Cursor.
+
 ## Features
 
 - **Auto-controller detection**: Automatically detects connected XInput controllers
 - **Radial menu mapping**: Maps joystick positions to keyboard keys (1-8) in a radial pattern
 - **Dual joystick support**: Uses left and right joysticks independently
 - **Real-time debug display**: Shows current angles, directions, and key states
-- **F7 exit hotkey**: Press F7 to exit the program
 
 ## Requirements
 
@@ -34,8 +35,8 @@ cmake --build . --config Release
 
 ## Usage
 
-1. Connect your XInput controller (Xbox controller)
-2. Run the executable: `build/bin/Release/ControllerToMaimai.exe`
+1. Connect your controller (XInput or DirectInput)
+2. Run the executable: `ControllerToMaimai.exe`
 3. The program will auto-detect your controller and show a debug window
 4. Use the left and right shoulder buttons (LB/RB) to activate radial menus
 5. Move the joysticks to select different keys (1-8)
