@@ -471,15 +471,6 @@ private:
         touchInfo.pointerInfo.ptPixelLocation.x = touchX;
         touchInfo.pointerInfo.ptPixelLocation.y = touchY;
         
-        // Convert to HIMETRIC for ptHimetricLocation
-        LONG himetricX, himetricY;
-        pixelToHimetric(touchX, touchY, himetricX, himetricY);
-        touchInfo.pointerInfo.ptHimetricLocation.x = himetricX;
-        touchInfo.pointerInfo.ptHimetricLocation.y = himetricY;
-        
-        // Set time stamp
-        touchInfo.pointerInfo.dwTime = GetTickCount();
-        
         // Set pointer flags
         if (isDown) {
             touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
@@ -489,52 +480,68 @@ private:
             touchInfo.pointerInfo.pointerFlags = POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
         }
         
-        // Set touch-specific fields - keep it minimal
+        // Set touch-specific fields - minimal setup to avoid ERROR_INVALID_PARAMETER
         touchInfo.touchFlags = TOUCH_FLAG_NONE;
-        touchInfo.touchMask = TOUCH_MASK_CONTACTAREA;
-        touchInfo.orientation = 0;
-        touchInfo.pressure = 0;
+        touchInfo.touchMask = TOUCH_MASK_CONTACTAREA | TOUCH_MASK_ORIENTATION | TOUCH_MASK_PRESSURE;
+        touchInfo.orientation = 90; // Standard orientation
+        touchInfo.pressure = 32000; // Medium pressure
         
-        // Set contact area in HIMETRIC units (not pixels!)
-        // Contact area is 4x4 pixels
-        int contactSizePixels = 2;
-        LONG leftH, topH, rightH, bottomH;
+        // Get DPI for proper HIMETRIC conversion
+        HDC screenDC = GetDC(nullptr);
+        int dpiX = GetDeviceCaps(screenDC, LOGPIXELSX);
+        int dpiY = GetDeviceCaps(screenDC, LOGPIXELSY);
+        ReleaseDC(nullptr, screenDC);
         
-        pixelToHimetric(touchX - contactSizePixels, touchY - contactSizePixels, leftH, topH);
-        pixelToHimetric(touchX + contactSizePixels, touchY + contactSizePixels, rightH, bottomH);
+        // Contact area in HIMETRIC (hundredths of millimeter)
+        // 10mm x 10mm contact area (typical finger size)
+        int contactHimetric = 1000; // 10mm = 1000 hundredths of mm
         
-        // Ensure proper ordering (left < right, top < bottom)
-        touchInfo.rcContact.left = (leftH < rightH) ? leftH : rightH;
-        touchInfo.rcContact.right = (leftH < rightH) ? rightH : leftH;
-        touchInfo.rcContact.top = (topH < bottomH) ? topH : bottomH;
-        touchInfo.rcContact.bottom = (topH < bottomH) ? bottomH : topH;
+        LONG himetricX = (touchX * 2540) / dpiX;
+        LONG himetricY = (touchY * 2540) / dpiY;
         
-        // Set raw contact area (same as contact area in HIMETRIC)
+        touchInfo.pointerInfo.ptHimetricLocation.x = himetricX;
+        touchInfo.pointerInfo.ptHimetricLocation.y = himetricY;
+        
+        // Set contact area - ensure left < right and top < bottom
+        int halfContact = contactHimetric / 2;
+        touchInfo.rcContact.left = himetricX - halfContact;
+        touchInfo.rcContact.right = himetricX + halfContact;
+        touchInfo.rcContact.top = himetricY - halfContact;
+        touchInfo.rcContact.bottom = himetricY + halfContact;
+        
+        // Raw contact area (same as contact area)
         touchInfo.rcContactRaw = touchInfo.rcContact;
         
         BOOL result = InjectTouchInput(1, &touchInfo);
         if (!result) {
             DWORD error = GetLastError();
-            static DWORD lastErrorPrint = 0;
             static int errorCount = 0;
             
-            // Only print first 5 errors to avoid spam
-            if (errorCount < 5) {
+            // Only print first 3 errors to avoid spam
+            if (errorCount < 3) {
                 std::cout << "Touch injection failed, error: " << error << " (touchId: " << touchId << ")" << std::endl;
-                std::cout << "  Pixel Pos: (" << touchX << ", " << touchY << "), Flags: " << touchInfo.pointerInfo.pointerFlags << std::endl;
-                std::cout << "  Contact HIMETRIC: L=" << touchInfo.rcContact.left << " R=" << touchInfo.rcContact.right 
-                          << " T=" << touchInfo.rcContact.top << " B=" << touchInfo.rcContact.bottom << std::endl;
+                std::cout << "  Pixel: (" << touchX << ", " << touchY << ") | HIMETRIC: (" << himetricX << ", " << himetricY << ")" << std::endl;
+                std::cout << "  Flags: " << touchInfo.pointerInfo.pointerFlags << std::endl;
                 
                 if (error == 87) {
-                    std::cout << "  This might mean:" << std::endl;
-                    std::cout << "  - Your system doesn't have touch hardware/drivers" << std::endl;
-                    std::cout << "  - Touch injection is not supported on this Windows version" << std::endl;
-                    std::cout << "  - Try using ControllerToMouse.exe instead" << std::endl;
+                    std::cout << "  ERROR_INVALID_PARAMETER - possible causes:" << std::endl;
+                    std::cout << "  1. Windows doesn't support touch injection (needs Windows 8+)" << std::endl;
+                    std::cout << "  2. Running in compatibility mode" << std::endl;
+                    std::cout << "  3. No touch drivers installed" << std::endl;
+                    std::cout << "  Try: Run as Administrator or use ControllerToMouse.exe instead" << std::endl;
+                } else if (error == 5) {
+                    std::cout << "  ERROR_ACCESS_DENIED - try running as Administrator" << std::endl;
                 }
                 errorCount++;
-                if (errorCount >= 5) {
-                    std::cout << "  (Further touch errors will be suppressed)" << std::endl;
+                if (errorCount >= 3) {
+                    std::cout << "  (Further errors suppressed - consider using ControllerToMouse.exe)" << std::endl;
                 }
+            }
+        } else {
+            static bool firstSuccess = true;
+            if (firstSuccess) {
+                std::cout << "Touch injection working! First touch at (" << touchX << ", " << touchY << ")" << std::endl;
+                firstSuccess = false;
             }
         }
     }
