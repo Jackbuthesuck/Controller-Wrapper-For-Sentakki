@@ -1,35 +1,3 @@
-/*
- * ============================================
- * CONTROLLER INPUT MAPPER
- * ============================================
- * 
- * A unified controller input mapper supporting three modes:
- *   1. Touch Mode - Multi-touch input for Sentakki (osu!lazer)
- *   2. Mouse Mode - Cursor control + left click
- *   3. Keyboard Mode - Number keys 1-8 based on stick direction
- * 
- * Features:
- *   - Works with XInput (Xbox) and DirectInput controllers
- *   - Beautiful full-screen overlay with smooth fading
- *   - On-screen debug UI (toggle with Ctrl+Shift+`)
- *   - Portable - no installation needed
- *   - Works on any Windows 10/11 PC
- * 
- * Technical:
- *   - Touch mode uses UWP InputInjector (no touch hardware needed!)
- *   - Mouse/Keyboard use standard SendInput
- *   - DirectInput + XInput support for maximum compatibility
- *   - GDI for overlay rendering
- * 
- * To Build:
- *   Run build.bat (requires Visual Studio 2022)
- *   Or manually: cl /EHsc /std:c++17 /await ControllerInput.cpp /link
- *                dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib
- *                msimg32.lib windowsapp.lib /out:ControllerInput.exe
- * 
- * Source File: ControllerInput.cpp (formerly ControllerToTouch.cpp)
- */
-
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dinput.h>
@@ -107,6 +75,11 @@ private:
     int overlayStickRadius;                 // Circle radius in pixels
     int updateIntervalMs;                   // Dynamic based on refresh rate
     
+    // Locked pointer visualization
+    double overlayLeftLockedX, overlayLeftLockedY;    // Left locked position
+    double overlayRightLockedX, overlayRightLockedY;  // Right locked position
+    int overlayLeftLockedAlpha, overlayRightLockedAlpha; // Locked pointer alpha
+    
     // ========== Input Mode State ==========
     InputMode currentMode;  // Current operating mode (Touch/Mouse/Keyboard)
     
@@ -115,6 +88,18 @@ private:
     bool rightTouchActive;
     InputInjector inputInjector;
     bool inputInjectorInitialized;
+    
+    // Touch mode section tracking
+    int currentLHeldDirection;  // Direction held when left bumper is pressed
+    int currentRHeldDirection;  // Direction held when right bumper is pressed
+    
+    // Touch mode pointer locking (trigger-based)
+    bool leftPointerLocked;     // Whether left touch is locked to a direction
+    bool rightPointerLocked;    // Whether right touch is locked to a direction
+    int leftLockedDirection;    // Direction the left touch is locked to
+    int rightLockedDirection;   // Direction the right touch is locked to
+    bool prevLeftTrigger;       // Previous left trigger state
+    bool prevRightTrigger;      // Previous right trigger state
     
     // Mouse mode state
     bool mouseButtonPressed;
@@ -137,7 +122,8 @@ private:
     static constexpr double STICK_NORMALIZE_FACTOR = 32767.5;
     static constexpr int DIRECTION_SECTORS = 8;  // 8 directional keys
     static constexpr double DEGREES_PER_SECTOR = 45.0;  // 360° / 8 = 45°
-    static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 15;  // Pixel radius for stick indicators
+    static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 16;  // Pixel radius for stick indicators
+    static constexpr int OVERLAY_LOCKED_INDICATOR_RADIUS = 14;  // Pixel radius for locked indicators (smaller)
 
 public:
     // ========== Constructor & Initialization ==========
@@ -147,9 +133,15 @@ public:
                         overlayLeftX(0.0), overlayLeftY(0.0), overlayRightX(0.0), overlayRightY(0.0),
                         overlayLeftAngle(-1.0), overlayRightAngle(-1.0), overlayStickRadius(150),
                         overlayLeftAlpha(0), overlayRightAlpha(0), updateIntervalMs(16),
+                        overlayLeftLockedX(0.0), overlayLeftLockedY(0.0), overlayRightLockedX(0.0), overlayRightLockedY(0.0),
+                        overlayLeftLockedAlpha(0), overlayRightLockedAlpha(0),
                         currentMode(mode), leftTouchActive(false), rightTouchActive(false), 
                         prevLeftBumper(false), prevRightBumper(false),
                         overlayPosX(0), overlayPosY(0), inputInjector(nullptr), inputInjectorInitialized(false),
+                        currentLHeldDirection(-1), currentRHeldDirection(-1),
+                        leftPointerLocked(false), rightPointerLocked(false),
+                        leftLockedDirection(-1), rightLockedDirection(-1),
+                        prevLeftTrigger(false), prevRightTrigger(false),
                         mouseButtonPressed(false), alternateFrame(false), currentLeftKey(""), currentRightKey(""),
                         debugText(""), showDebugInfo(true) {
         // Don't initialize controllers or create GUI in constructor
@@ -363,9 +355,21 @@ private:
             DeleteObject(boundaryPen);
         }
         
-        // Draw angle indicators first (so they appear behind the stick indicators)
-        drawAngleIndicator(hdc, centerX, centerY, overlayLeftAngle, RGB(100, 150, 255), overlayLeftAlpha);
-        drawAngleIndicator(hdc, centerX, centerY, overlayRightAngle, RGB(255, 100, 150), overlayRightAlpha);
+        // Draw direction indicators first (so they appear behind the stick indicators)
+        // Calculate current directions from angles
+        int leftDirection = getDirection(overlayLeftAngle);
+        int rightDirection = getDirection(overlayRightAngle);
+        
+        // Draw direction indicators with overlap handling
+        if (leftDirection == rightDirection && leftDirection >= 0) {
+            // Both sticks point to same direction - draw yellow blended arc
+            int maxAlpha = (overlayLeftAlpha > overlayRightAlpha) ? overlayLeftAlpha : overlayRightAlpha;
+            drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(255, 255, 0), maxAlpha);
+        } else {
+            // Different directions - draw each separately
+            drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(100, 150, 255), overlayLeftAlpha);
+            drawDirectionIndicator(hdc, centerX, centerY, rightDirection, RGB(255, 100, 150), overlayRightAlpha);
+        }
         
         // Draw both sticks at the same position (they will overlap)
         // Draw left stick (blue)
@@ -374,52 +378,78 @@ private:
         // Draw right stick (pink)
         drawStick(hdc, centerX, centerY, overlayRightX, overlayRightY, RGB(255, 100, 150), overlayRightAlpha);
         
+        // Draw locked pointers (solid circles, bigger, only when triggers are active)
+        // Left locked pointer (darker blue) - draw below raw pointer
+        drawLockedPointer(hdc, centerX, centerY, overlayLeftLockedX, overlayLeftLockedY, RGB(50, 100, 200), overlayLeftLockedAlpha);
+        
+        // Right locked pointer (darker pink) - draw below raw pointer
+        drawLockedPointer(hdc, centerX, centerY, overlayRightLockedX, overlayRightLockedY, RGB(200, 50, 100), overlayRightLockedAlpha);
+        
         // Draw debug text on the middle left (if enabled)
         if (showDebugInfo && !debugText.empty()) {
             drawDebugText(hdc, rect);
         }
     }
 
-    void drawAngleIndicator(HDC hdc, int centerX, int centerY, double angle, COLORREF color, int alpha) {
-        if (angle < 0 || alpha == 0) return; // No input detected or invisible
+
+    void drawDirectionIndicator(HDC hdc, int centerX, int centerY, int direction, COLORREF color, int alpha) {
+        if (direction < 0 || alpha == 0) return; // No input detected or invisible
         
         // Skip if too faint to avoid artifacts
         if (alpha < 10) return;
         
-        // Draw an arc along the main boundary circle
-        double arcSpan = 45.0; // Arc spans 45 degrees (22.5 degrees on each side)
-        
-        // Calculate start and end angles for the arc
-        double arcStartAngle = angle - arcSpan / 2.0;
-        double arcEndAngle = angle + arcSpan / 2.0;
-        
-        // Convert to radians (standard math: 0° = right, counter-clockwise)
-        double startRad = (90 - arcStartAngle) * PI / 180.0;
-        double endRad = (90 - arcEndAngle) * PI / 180.0;
-        
-        // Calculate arc endpoints on the boundary circle
-        int startX = centerX + (int)(cos(startRad) * overlayStickRadius);
-        int startY = centerY - (int)(sin(startRad) * overlayStickRadius);
-        int endX = centerX + (int)(cos(endRad) * overlayStickRadius);
-        int endY = centerY - (int)(sin(endRad) * overlayStickRadius);
-        
-        // Modulate pen width based on alpha for fade effect (thinner when faint)
-        int penWidth = 2 + (alpha * 8 / 255); // 2-10 pixels
-        
-        // Draw the arc along the main circle boundary - use full bright color for vibrancy
-        HPEN arcPen = CreatePen(PS_SOLID, penWidth, color);
-        HPEN oldPen = (HPEN)SelectObject(hdc, arcPen);
-        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
-        
-        // Use Arc function to draw along the boundary circle
-        Arc(hdc,
-            centerX - overlayStickRadius, centerY - overlayStickRadius,
-            centerX + overlayStickRadius, centerY + overlayStickRadius,
-            endX, endY, startX, startY);
-        
-        SelectObject(hdc, oldPen);
-        SelectObject(hdc, oldBrush);
-        DeleteObject(arcPen);
+        // Draw direction indicators: current direction full opaque, adjacent directions half opaque
+        for (int dir = 0; dir < DIRECTION_SECTORS; dir++) {
+            int currentAlpha;
+            if (dir == direction) {
+                currentAlpha = alpha; // Full opacity for current direction
+            } else if (dir == (direction - 1 + DIRECTION_SECTORS) % DIRECTION_SECTORS || 
+                       dir == (direction + 1) % DIRECTION_SECTORS) {
+                currentAlpha = 1; // Almost invisible for adjacent directions
+            } else {
+                continue; // Skip non-adjacent directions
+            }
+            
+            // Calculate angle for this direction
+            // Direction 0 should be Up-Right (22.5°), not directly up (0°)
+            double dirAngle = (dir * DEGREES_PER_SECTOR) + 22.5;
+            if (dirAngle >= 360.0) {
+                dirAngle -= 360.0;
+            }
+            
+            // Draw an arc for this direction (45 degrees span)
+            double arcSpan = DEGREES_PER_SECTOR; // 45 degrees per direction
+            double arcStartAngle = dirAngle - arcSpan / 2.0;
+            double arcEndAngle = dirAngle + arcSpan / 2.0;
+            
+            // Convert to radians (standard math: 0° = right, counter-clockwise)
+            double startRad = (90 - arcStartAngle) * PI / 180.0;
+            double endRad = (90 - arcEndAngle) * PI / 180.0;
+            
+            // Calculate arc endpoints on the boundary circle
+            int startX = centerX + (int)(cos(startRad) * overlayStickRadius);
+            int startY = centerY - (int)(sin(startRad) * overlayStickRadius);
+            int endX = centerX + (int)(cos(endRad) * overlayStickRadius);
+            int endY = centerY - (int)(sin(endRad) * overlayStickRadius);
+            
+            // Modulate pen width based on alpha for fade effect
+            int penWidth = 2 + (currentAlpha * 8 / 255); // 2-10 pixels
+            
+            // Draw the arc along the main circle boundary
+            HPEN arcPen = CreatePen(PS_SOLID, penWidth, color);
+            HPEN oldPen = (HPEN)SelectObject(hdc, arcPen);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            
+            // Use Arc function to draw along the boundary circle
+            Arc(hdc,
+                centerX - overlayStickRadius, centerY - overlayStickRadius,
+                centerX + overlayStickRadius, centerY + overlayStickRadius,
+                endX, endY, startX, startY);
+            
+            SelectObject(hdc, oldPen);
+            SelectObject(hdc, oldBrush);
+            DeleteObject(arcPen);
+        }
     }
 
     void drawStick(HDC hdc, int centerX, int centerY, double stickX, double stickY, COLORREF color, int alpha) {
@@ -451,6 +481,29 @@ private:
         SelectObject(hdc, oldPen);
         SelectObject(hdc, oldBrush);
         DeleteObject(indicatorPen);
+    }
+
+    void drawLockedPointer(HDC hdc, int centerX, int centerY, double stickX, double stickY, COLORREF color, int alpha) {
+        if (alpha == 0) return; // Don't draw if invisible
+        
+        // Draw locked pointer - solid filled circle (smaller than regular pointer)
+        int indicatorX = centerX + (int)(stickX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
+        int indicatorY = centerY - (int)(stickY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
+        
+        // Create solid brush for filled circle
+        HBRUSH solidBrush = CreateSolidBrush(color);
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, solidBrush);
+        HPEN oldPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+        
+        Ellipse(hdc,
+                indicatorX - OVERLAY_LOCKED_INDICATOR_RADIUS,
+                indicatorY - OVERLAY_LOCKED_INDICATOR_RADIUS,
+                indicatorX + OVERLAY_LOCKED_INDICATOR_RADIUS,
+                indicatorY + OVERLAY_LOCKED_INDICATOR_RADIUS);
+        
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(solidBrush);
     }
 
     void drawDebugText(HDC hdc, RECT rect) {
@@ -656,12 +709,59 @@ private:
         }
     }
 
-    void handleTouchControl(bool leftBumper, bool rightBumper, double leftX, double leftY, double rightX, double rightY) {
-        // Detect button press edges
+    void handleTouchControl(bool leftBumper, bool rightBumper, bool leftTrigger, bool rightTrigger, double leftX, double leftY, double rightX, double rightY) {
+        // Calculate angles and directions (like in keyboard mode) - for future use
+        double lAngle = calculateAngle(leftX, leftY);
+        double rAngle = calculateAngle(rightX, rightY);
+        int lDirection = getDirection(lAngle);
+        int rDirection = getDirection(rAngle);
+        
+        // Detect trigger press edges for pointer locking
+        bool leftTriggerPressed = leftTrigger && !prevLeftTrigger;
+        bool rightTriggerPressed = rightTrigger && !prevRightTrigger;
+        bool leftTriggerReleased = !leftTrigger && prevLeftTrigger;
+        bool rightTriggerReleased = !rightTrigger && prevRightTrigger;
+        
+        // Detect bumper press edges for touch input
         bool leftPressed = leftBumper && !prevLeftBumper;
         bool rightPressed = rightBumper && !prevRightBumper;
         bool leftReleased = !leftBumper && prevLeftBumper;
         bool rightReleased = !rightBumper && prevRightBumper;
+        
+        // Handle stick click-based pointer locking and touch events
+        // Left stick click (L3) controls left touch locking
+        if (leftTriggerPressed) {
+            currentLHeldDirection = lDirection; // Capture current direction when stick clicked
+            leftTouchActive = true; // Start touch event
+            sendTouch(0, leftX, leftY, true, false); // Touch down
+        }
+        
+        if (leftTriggerReleased) {
+            leftPointerLocked = false; // Release lock when stick released
+            leftLockedDirection = -1;
+            currentLHeldDirection = -1;
+            if (leftTouchActive) {
+                sendTouch(0, leftX, leftY, false, true); // Touch up
+                leftTouchActive = false;
+            }
+        }
+        
+        // Right stick click (R3) controls right touch locking
+        if (rightTriggerPressed) {
+            currentRHeldDirection = rDirection; // Capture current direction when stick clicked
+            rightTouchActive = true; // Start touch event
+            sendTouch(1, rightX, rightY, true, false); // Touch down
+        }
+        
+        if (rightTriggerReleased) {
+            rightPointerLocked = false; // Release lock when stick released
+            rightLockedDirection = -1;
+            currentRHeldDirection = -1;
+            if (rightTouchActive) {
+                sendTouch(1, rightX, rightY, false, true); // Touch up
+                rightTouchActive = false;
+            }
+        }
         
         // Handle left bumper - touch ID 0
         if (leftPressed && !leftTouchActive) {
@@ -669,7 +769,47 @@ private:
             sendTouch(0, leftX, leftY, true, false); // Touch down - only send once on press
             std::cout << "Left bumper pressed: Sending Touch 0 DOWN" << std::endl;
         } else if (leftTouchActive && leftBumper) {
-            sendTouch(0, leftX, leftY, false, false); // Touch move/update
+            // Check for pointer locking (trigger-based)
+            if (leftTrigger && currentLHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentLHeldDirection, lDirection, lAngle, newLockedDirection)) {
+                    if (!leftPointerLocked || leftLockedDirection != newLockedDirection) {
+                        leftPointerLocked = true;
+                        leftLockedDirection = newLockedDirection;
+                    }
+                    // Use axis-based locking for positioning - lock to direction's position
+                    double lockedX, lockedY;
+                    if (leftLockedDirection == 0 || leftLockedDirection == 3 || leftLockedDirection == 4 || leftLockedDirection == 7) {
+                        // Y-axis lock: keep current Y, set X to direction's X position
+                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = std::sin(dirAngle * PI / 180.0);
+                        lockedY = leftY;
+                    } else {
+                        // X-axis lock: keep current X, set Y to direction's Y position
+                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = leftX;
+                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    }
+                    sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (leftPointerLocked) {
+                        leftPointerLocked = false;
+                        leftLockedDirection = -1;
+                    }
+                    sendTouch(0, leftX, leftY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (leftPointerLocked) {
+                    leftPointerLocked = false;
+                    leftLockedDirection = -1;
+                    std::cout << "Left pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(0, leftX, leftY, false, false); // Touch move/update
+            }
         }
         
         if (leftReleased && leftTouchActive) {
@@ -678,13 +818,98 @@ private:
             std::cout << "Left bumper released: Sending Touch 0 UP" << std::endl;
         }
         
+        // Handle left trigger movement while held
+        if (leftTouchActive && leftTrigger) {
+            // Check for pointer locking (trigger-based)
+            if (currentLHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentLHeldDirection, lDirection, lAngle, newLockedDirection)) {
+                    if (!leftPointerLocked || leftLockedDirection != newLockedDirection) {
+                        leftPointerLocked = true;
+                        leftLockedDirection = newLockedDirection;
+                    }
+                    // Use axis-based locking for positioning - lock to direction's position
+                    double lockedX, lockedY;
+                    if (leftLockedDirection == 0 || leftLockedDirection == 3 || leftLockedDirection == 4 || leftLockedDirection == 7) {
+                        // Y-axis lock: keep current Y, set X to direction's X position
+                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = std::sin(dirAngle * PI / 180.0);
+                        lockedY = leftY;
+                    } else {
+                        // X-axis lock: keep current X, set Y to direction's Y position
+                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = leftX;
+                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    }
+                    sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (leftPointerLocked) {
+                        leftPointerLocked = false;
+                        leftLockedDirection = -1;
+                    }
+                    sendTouch(0, leftX, leftY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (leftPointerLocked) {
+                    leftPointerLocked = false;
+                    leftLockedDirection = -1;
+                    std::cout << "Left pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(0, leftX, leftY, false, false); // Touch move/update
+            }
+        }
+        
         // Handle right bumper - touch ID 1
         if (rightPressed && !rightTouchActive) {
             rightTouchActive = true;
             sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
             std::cout << "Right bumper pressed: Sending Touch 1 DOWN" << std::endl;
         } else if (rightTouchActive && rightBumper) {
-            sendTouch(1, rightX, rightY, false, false); // Touch move/update
+            // Check for pointer locking (trigger-based)
+            if (rightTrigger && currentRHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentRHeldDirection, rDirection, rAngle, newLockedDirection)) {
+                    if (!rightPointerLocked || rightLockedDirection != newLockedDirection) {
+                        rightPointerLocked = true;
+                        rightLockedDirection = newLockedDirection;
+                    }
+                    // Use axis-based locking for positioning - lock to direction's position
+                    double lockedX, lockedY;
+                    if (rightLockedDirection == 0 || rightLockedDirection == 3 || rightLockedDirection == 4 || rightLockedDirection == 7) {
+                        // Y-axis lock: keep current Y, set X to direction's X position
+                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = std::sin(dirAngle * PI / 180.0);
+                        lockedY = rightY;
+                    } else {
+                        // X-axis lock: keep current X, set Y to direction's Y position
+                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = rightX;
+                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    }
+                    sendTouch(1, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (rightPointerLocked) {
+                        rightPointerLocked = false;
+                        rightLockedDirection = -1;
+                    }
+                    sendTouch(1, rightX, rightY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (rightPointerLocked) {
+                    rightPointerLocked = false;
+                    rightLockedDirection = -1;
+                    std::cout << "Right pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(1, rightX, rightY, false, false); // Touch move/update
+            }
         }
         
         if (rightReleased && rightTouchActive) {
@@ -693,9 +918,56 @@ private:
             std::cout << "Right bumper released: Sending Touch 1 UP" << std::endl;
         }
         
+        // Handle right trigger movement while held
+        if (rightTouchActive && rightTrigger) {
+            // Check for pointer locking (trigger-based)
+            if (currentRHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentRHeldDirection, rDirection, rAngle, newLockedDirection)) {
+                    if (!rightPointerLocked || rightLockedDirection != newLockedDirection) {
+                        rightPointerLocked = true;
+                        rightLockedDirection = newLockedDirection;
+                    }
+                    // Use axis-based locking for positioning - lock to direction's position
+                    double lockedX, lockedY;
+                    if (rightLockedDirection == 0 || rightLockedDirection == 3 || rightLockedDirection == 4 || rightLockedDirection == 7) {
+                        // Y-axis lock: keep current Y, set X to direction's X position
+                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = std::sin(dirAngle * PI / 180.0);
+                        lockedY = rightY;
+                    } else {
+                        // X-axis lock: keep current X, set Y to direction's Y position
+                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                        if (dirAngle >= 360.0) dirAngle -= 360.0;
+                        lockedX = rightX;
+                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    }
+                    sendTouch(1, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (rightPointerLocked) {
+                        rightPointerLocked = false;
+                        rightLockedDirection = -1;
+                    }
+                    sendTouch(1, rightX, rightY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (rightPointerLocked) {
+                    rightPointerLocked = false;
+                    rightLockedDirection = -1;
+                    std::cout << "Right pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(1, rightX, rightY, false, false); // Touch move/update
+            }
+        }
+        
         // Update previous button states
         prevLeftBumper = leftBumper;
         prevRightBumper = rightBumper;
+        prevLeftTrigger = leftTrigger;
+        prevRightTrigger = rightTrigger;
     }
 
     // ========== Mouse Mode (SendInput) ==========
@@ -903,20 +1175,83 @@ private:
         
         // Calculate distance from center for left stick
         double leftDistance = std::sqrt(leftX * leftX + leftY * leftY);
-        // Map 0.0-0.5 distance to 0-255 alpha (max opacity at 50% from center)
-        if (leftDistance >= 0.5) {
-            overlayLeftAlpha = 255;
+        // Left stick alpha: full opacity when bumper OR trigger pressed, fade when neither pressed
+        if (leftTouchActive || leftPointerLocked) {
+            overlayLeftAlpha = 255; // Full opacity when bumper or trigger is pressed
         } else {
-            overlayLeftAlpha = (int)((leftDistance / 0.5) * 255.0);
+            // Map 0.0-0.5 distance to 0-255 alpha (max opacity at 50% from center)
+            if (leftDistance >= 0.5) {
+                overlayLeftAlpha = 255;
+            } else {
+                overlayLeftAlpha = (int)((leftDistance / 0.5) * 255.0);
+            }
         }
         
         // Calculate distance from center for right stick
         double rightDistance = std::sqrt(rightX * rightX + rightY * rightY);
-        // Map 0.0-0.5 distance to 0-255 alpha (max opacity at 50% from center)
-        if (rightDistance >= 0.5) {
-            overlayRightAlpha = 255;
+        // Right stick alpha: full opacity when bumper OR trigger pressed, fade when neither pressed
+        if (rightTouchActive || rightPointerLocked) {
+            overlayRightAlpha = 255; // Full opacity when bumper or trigger is pressed
         } else {
-            overlayRightAlpha = (int)((rightDistance / 0.5) * 255.0);
+            // Map 0.0-0.5 distance to 0-255 alpha (max opacity at 50% from center)
+            if (rightDistance >= 0.5) {
+                overlayRightAlpha = 255;
+            } else {
+                overlayRightAlpha = (int)((rightDistance / 0.5) * 255.0);
+            }
+        }
+        
+        // Calculate active touch pointer positions
+        if (leftTouchActive) {
+            if (leftPointerLocked && currentLHeldDirection >= 0) {
+                // Use axis-based locking for visual representation - lock to direction's position
+                if (leftLockedDirection == 0 || leftLockedDirection == 3 || leftLockedDirection == 4 || leftLockedDirection == 7) {
+                    // Y-axis lock: keep current Y, set X to direction's X position
+                    double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                    if (dirAngle >= 360.0) dirAngle -= 360.0;
+                    overlayLeftLockedX = std::sin(dirAngle * PI / 180.0);
+                    overlayLeftLockedY = leftY;
+                } else {
+                    // X-axis lock: keep current X, set Y to direction's Y position
+                    double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                    if (dirAngle >= 360.0) dirAngle -= 360.0;
+                    overlayLeftLockedX = leftX;
+                    overlayLeftLockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                }
+            } else {
+                // Bumper pressed or trigger without locking - show current stick position
+                overlayLeftLockedX = leftX;
+                overlayLeftLockedY = leftY;
+            }
+            overlayLeftLockedAlpha = 255; // Full opacity for active touch pointer
+        } else {
+            overlayLeftLockedAlpha = 0; // Hide when not active
+        }
+        
+        if (rightTouchActive) {
+            if (rightPointerLocked && currentRHeldDirection >= 0) {
+                // Use axis-based locking for visual representation - lock to direction's position
+                if (rightLockedDirection == 0 || rightLockedDirection == 3 || rightLockedDirection == 4 || rightLockedDirection == 7) {
+                    // Y-axis lock: keep current Y, set X to direction's X position
+                    double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                    if (dirAngle >= 360.0) dirAngle -= 360.0;
+                    overlayRightLockedX = std::sin(dirAngle * PI / 180.0);
+                    overlayRightLockedY = rightY;
+                } else {
+                    // X-axis lock: keep current X, set Y to direction's Y position
+                    double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
+                    if (dirAngle >= 360.0) dirAngle -= 360.0;
+                    overlayRightLockedX = rightX;
+                    overlayRightLockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                }
+            } else {
+                // Bumper pressed or trigger without locking - show current stick position
+                overlayRightLockedX = rightX;
+                overlayRightLockedY = rightY;
+            }
+            overlayRightLockedAlpha = 255; // Full opacity for active touch pointer
+        } else {
+            overlayRightLockedAlpha = 0; // Hide when not active
         }
         
         if (overlayHwnd) {
@@ -1215,6 +1550,80 @@ private:
         return direction;
     }
 
+    /**
+     * Get the opposite direction (180° apart)
+     * @param direction Direction sector (0-7)
+     * @return Opposite direction sector (0-7)
+     */
+    int getOppositeDirection(int direction) {
+        if (direction < 0 || direction >= DIRECTION_SECTORS) return -1;
+        return (direction + 4) % DIRECTION_SECTORS;
+    }
+
+    /**
+     * Calculate angle difference between two directions
+     * @param dir1 First direction (0-7)
+     * @param dir2 Second direction (0-7)
+     * @return Angle difference in degrees (0-180)
+     */
+    double getDirectionAngleDifference(int dir1, int dir2) {
+        if (dir1 < 0 || dir2 < 0) return 180.0;
+        
+        double angle1 = dir1 * DEGREES_PER_SECTOR;
+        double angle2 = dir2 * DEGREES_PER_SECTOR;
+        
+        double diff = std::abs(angle1 - angle2);
+        if (diff > 180.0) {
+            diff = 360.0 - diff;
+        }
+        return diff;
+    }
+
+    /**
+     * Get adjacent directions for a given direction
+     * @param direction Base direction (0-7)
+     * @param leftAdjacent Reference to store left adjacent direction
+     * @param rightAdjacent Reference to store right adjacent direction
+     */
+    void getAdjacentDirections(int direction, int& leftAdjacent, int& rightAdjacent) {
+        if (direction < 0 || direction >= DIRECTION_SECTORS) {
+            leftAdjacent = -1;
+            rightAdjacent = -1;
+            return;
+        }
+        
+        leftAdjacent = (direction - 1 + DIRECTION_SECTORS) % DIRECTION_SECTORS;
+        rightAdjacent = (direction + 1) % DIRECTION_SECTORS;
+    }
+
+    /**
+     * Check if pointer should be locked based on stick movement
+     * @param heldDirection The direction when bumper was first pressed
+     * @param currentDirection Current stick direction
+     * @param currentAngle Current stick angle
+     * @param lockedDirection Reference to store the direction to lock to
+     * @return true if pointer should be locked
+     */
+    bool checkPointerLock(int heldDirection, int currentDirection, double currentAngle, int& lockedDirection) {
+        if (heldDirection < 0 || currentDirection < 0) return false;
+        
+        // Simple directional lock: Y-axis for directions 0,3,4,7 and X-axis for 1,2,5,6
+        bool isYAxisDirection = (heldDirection == 0 || heldDirection == 3 || heldDirection == 4 || heldDirection == 7);
+        bool isXAxisDirection = (heldDirection == 1 || heldDirection == 2 || heldDirection == 5 || heldDirection == 6);
+        
+        if (isYAxisDirection) {
+            // Lock to Y-axis: keep current Y, set X to 0
+            lockedDirection = heldDirection; // Keep the same direction for visual consistency
+            return true;
+        } else if (isXAxisDirection) {
+            // Lock to X-axis: keep current X, set Y to 0  
+            lockedDirection = heldDirection; // Keep the same direction for visual consistency
+            return true;
+        }
+        
+        return false;
+    }
+
     // ========== Debug Info Display ==========
     
     void updateDebugInfo(double lAngle, double rAngle, int lDirection, int rDirection, const DIJOYSTATE2* diState = nullptr) {
@@ -1247,12 +1656,26 @@ private:
                 LONG touchX, touchY;
                 getTouchCoordinates(overlayLeftX, overlayLeftY, touchX, touchY);
                 info += "    Screen: (" + std::to_string(touchX) + ", " + std::to_string(touchY) + ")\r\n";
+                // Show held direction and lock status
+                if (currentLHeldDirection >= 0) {
+                    info += "    Held Dir: " + std::to_string(currentLHeldDirection) + "\r\n";
+                }
+                if (leftPointerLocked) {
+                    info += "    LOCKED to: " + std::to_string(leftLockedDirection) + "\r\n";
+                }
             }
             info += "  Touch 1 (RB + R Stick): " + std::string(rightTouchActive ? "ACTIVE" : "---") + "\r\n";
             if (rightTouchActive) {
                 LONG touchX, touchY;
                 getTouchCoordinates(overlayRightX, overlayRightY, touchX, touchY);
                 info += "    Screen: (" + std::to_string(touchX) + ", " + std::to_string(touchY) + ")\r\n";
+                // Show held direction and lock status
+                if (currentRHeldDirection >= 0) {
+                    info += "    Held Dir: " + std::to_string(currentRHeldDirection) + "\r\n";
+                }
+                if (rightPointerLocked) {
+                    info += "    LOCKED to: " + std::to_string(rightLockedDirection) + "\r\n";
+                }
             }
             info += "\r\n";
             
@@ -1265,15 +1688,61 @@ private:
             info += buf;
             info += "\r\n";
             
-            // Bumpers
-            info += "BUMPERS:\r\n";
+            // Current angles and directions
+            info += "CURRENT DIRECTIONS:\r\n";
+            if (lAngle >= 0) {
+                sprintf_s(buf, "  Left:  %.1f° (Dir %d)\r\n", lAngle, lDirection);
+                info += buf;
+            } else {
+                info += "  Left:  ---\r\n";
+            }
+            if (rAngle >= 0) {
+                sprintf_s(buf, "  Right: %.1f° (Dir %d)\r\n", rAngle, rDirection);
+                info += buf;
+            } else {
+                info += "  Right: ---\r\n";
+            }
+            info += "\r\n";
+            
+            // Bumpers and Triggers
+            info += "BUMPERS & TRIGGERS:\r\n";
             if (hasXInputController) {
                 info += "  LB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? "PRESSED" : "---") + "\r\n";
-                info += "  RB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? "PRESSED" : "---") + "\r\n\r\n";
+                info += "  RB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? "PRESSED" : "---") + "\r\n";
+                info += "  LT: " + std::string((xInputState.Gamepad.bLeftTrigger > 0) ? "PRESSED" : "---") + "\r\n";
+                info += "  RT: " + std::string((xInputState.Gamepad.bRightTrigger > 0) ? "PRESSED" : "---") + "\r\n\r\n";
             } else if (diState) {
                 info += "  LB: " + std::string((diState->rgbButtons[4] & 0x80) ? "PRESSED" : "---") + "\r\n";
-                info += "  RB: " + std::string((diState->rgbButtons[5] & 0x80) ? "PRESSED" : "---") + "\r\n\r\n";
+                info += "  RB: " + std::string((diState->rgbButtons[5] & 0x80) ? "PRESSED" : "---") + "\r\n";
+                info += "  LT: " + std::string((diState->rglSlider[0] > 0) || (diState->lRx > 0) ? "PRESSED" : "---") + "\r\n";
+                info += "  RT: " + std::string((diState->rglSlider[1] > 0) || (diState->lRy > 0) ? "PRESSED" : "---") + "\r\n";
+                info += "\r\n";
+                info += "DIRECTINPUT AXES DEBUG:\r\n";
+                char buf[128];
+                sprintf_s(buf, "  Slider[0]: %d, Slider[1]: %d\r\n", diState->rglSlider[0], diState->rglSlider[1]);
+                info += buf;
+                sprintf_s(buf, "  lRx: %d, lRy: %d, lRz: %d\r\n", diState->lRx, diState->lRy, diState->lRz);
+                info += buf;
+                info += "\r\n";
             }
+            
+            // Pointer locking status
+            info += "POINTER LOCKING:\r\n";
+            info += "  Left Lock: " + std::string(leftPointerLocked ? "ACTIVE" : "---") + "\r\n";
+            if (leftPointerLocked) {
+                info += "    Locked to: " + std::to_string(leftLockedDirection) + "\r\n";
+            }
+            if (currentLHeldDirection >= 0) {
+                info += "    Captured: " + std::to_string(currentLHeldDirection) + "\r\n";
+            }
+            info += "  Right Lock: " + std::string(rightPointerLocked ? "ACTIVE" : "---") + "\r\n";
+            if (rightPointerLocked) {
+                info += "    Locked to: " + std::to_string(rightLockedDirection) + "\r\n";
+            }
+            if (currentRHeldDirection >= 0) {
+                info += "    Captured: " + std::to_string(currentRHeldDirection) + "\r\n";
+            }
+            info += "\r\n";
         } else if (currentMode == InputMode::Mouse) {
             info += "MOUSE CONTROL:\r\n";
             bool leftPressed = prevLeftBumper;
@@ -1522,6 +1991,8 @@ public:
             bool controllerSuccess = false;
             bool leftButtonPressed = false;
             bool rightButtonPressed = false;
+            bool leftTriggerPressed = false;
+            bool rightTriggerPressed = false;
             double joyX = 0, joyY = 0, joyZ = 0, joyR = 0;
             
             if (hasXInputController) {
@@ -1533,6 +2004,10 @@ public:
                     // XInput button mapping: Left Shoulder = LB, Right Shoulder = RB
                     leftButtonPressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
                     rightButtonPressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
+                    
+                    // XInput stick click mapping: L3 = Left stick click, R3 = Right stick click
+                    leftTriggerPressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+                    rightTriggerPressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
                     
                     // XInput stick values: -32768 to 32767, normalize to -1.0 to 1.0
                     // For XInput, we need to match DirectInput coordinate system
@@ -1559,6 +2034,13 @@ public:
                     // DirectInput button mapping
                     leftButtonPressed = (state.rgbButtons[4] & 0x80) != 0;
                     rightButtonPressed = (state.rgbButtons[5] & 0x80) != 0;
+                    
+                    // DirectInput stick click mapping - use L3 and R3 buttons
+                    // Left stick click: L3 button (button 10)
+                    leftTriggerPressed = (state.rgbButtons[10] & 0x80) != 0; // L3 button
+                    // Right stick click: R3 button (button 11)
+                    rightTriggerPressed = (state.rgbButtons[11] & 0x80) != 0; // R3 button
+                    
                     
                     // DirectInput stick values
                     joyX = (state.lX / 32767.5) - 1.0;
@@ -1597,7 +2079,7 @@ public:
                 // Handle input based on current mode
                 switch (currentMode) {
                     case InputMode::Touch:
-                        handleTouchControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
+                        handleTouchControl(leftButtonPressed, rightButtonPressed, leftTriggerPressed, rightTriggerPressed, joyX, joyY, joyZ, joyR);
                         break;
                     case InputMode::Mouse:
                         handleMouseControl(leftButtonPressed, rightButtonPressed, joyX, joyY, joyZ, joyR);
