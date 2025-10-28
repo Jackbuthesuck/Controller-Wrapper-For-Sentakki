@@ -364,18 +364,30 @@ private:
         int leftDirection = getDirection(overlayLeftAngle);
         int rightDirection = getDirection(overlayRightAngle);
         
-        // Draw direction indicators with overlap handling (only when sticks are active)
-        if (leftTouchActive && rightTouchActive && leftDirection == rightDirection && leftDirection >= 0) {
+        // Draw direction indicators with overlap handling (only when sticks are actually moved with deadzone)
+        // Use the same distance calculation as the overlay alpha system for consistency
+        double leftDistance = std::sqrt(overlayLeftX * overlayLeftX + overlayLeftY * overlayLeftY);
+        double rightDistance = std::sqrt(overlayRightX * overlayRightX + overlayRightY * overlayRightY);
+        bool leftStickMoved = (leftDistance > 0.1); // Use distance-based deadzone like overlay
+        bool rightStickMoved = (rightDistance > 0.1);
+        
+        if (leftStickMoved && rightStickMoved && leftDirection == rightDirection && leftDirection >= 0) {
             // Both sticks point to same direction - draw yellow blended arc
             int maxAlpha = (overlayLeftAlpha > overlayRightAlpha) ? overlayLeftAlpha : overlayRightAlpha;
-            drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(255, 255, 0), maxAlpha);
+            // Use active thickness if either bumper is pressed, otherwise use stick thickness
+            int thickness = (leftTouchActive || rightTouchActive) ? -1 : (1 + (maxAlpha * 5 / 255));
+            drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(255, 255, 0), maxAlpha, thickness);
         } else {
-            // Different directions or only one active - draw each separately
-            if (leftTouchActive && leftDirection >= 0) {
-                drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(100, 150, 255), overlayLeftAlpha);
+            // Different directions or only one moved - draw each separately
+            if (leftStickMoved && leftDirection >= 0) {
+                // Use active thickness if bumper is pressed, otherwise use stick thickness
+                int thickness = leftTouchActive ? -1 : (1 + (overlayLeftAlpha * 5 / 255));
+                drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(100, 150, 255), overlayLeftAlpha, thickness);
             }
-            if (rightTouchActive && rightDirection >= 0) {
-                drawDirectionIndicator(hdc, centerX, centerY, rightDirection, RGB(255, 100, 150), overlayRightAlpha);
+            if (rightStickMoved && rightDirection >= 0) {
+                // Use active thickness if bumper is pressed, otherwise use stick thickness
+                int thickness = rightTouchActive ? -1 : (1 + (overlayRightAlpha * 5 / 255));
+                drawDirectionIndicator(hdc, centerX, centerY, rightDirection, RGB(255, 100, 150), overlayRightAlpha, thickness);
             }
         }
         
@@ -400,7 +412,7 @@ private:
     }
 
 
-    void drawDirectionIndicator(HDC hdc, int centerX, int centerY, int direction, COLORREF color, int alpha) {
+    void drawDirectionIndicator(HDC hdc, int centerX, int centerY, int direction, COLORREF color, int alpha, int thickness = -1) {
         if (direction < 0 || alpha == 0) return; // No input detected or invisible
         
         // Skip if too faint to avoid artifacts
@@ -441,7 +453,20 @@ private:
             int endY = centerY - (int)(sin(endRad) * overlayStickRadius);
             
             // Modulate pen width based on alpha for fade effect
-            int penWidth = 2 + (currentAlpha * 8 / 255); // 2-10 pixels
+            int penWidth;
+            if (dir == direction) {
+                // Main direction - use full thickness
+                if (thickness == -1) {
+                    // Default active thickness (when bumper pressed)
+                    penWidth = 2 + (currentAlpha * 8 / 255); // 2-10 pixels
+                } else {
+                    // Use specified thickness (for inactive state)
+                    penWidth = thickness;
+                }
+            } else {
+                // Adjacent directions - always small/thin
+                penWidth = 1; // Always thin for adjacent directions
+            }
             
             // Draw the arc along the main circle boundary
             HPEN arcPen = CreatePen(PS_SOLID, penWidth, color);

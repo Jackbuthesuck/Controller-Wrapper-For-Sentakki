@@ -9,16 +9,6 @@ if %ERRORLEVEL% EQU 0 (
     echo.
     echo ========================================
     echo [SUCCESS] ControllerInput.exe built!
-    echo ========================================
-    echo.
-    echo Features:
-    echo   [1] Touch Mode - Multi-touch for Sentakki
-    echo   [2] Mouse Mode - Cursor + click control
-    echo   [3] Keyboard Mode - Number keys 1-8
-    echo.
-    echo All modes include overlay + debug UI
-    echo Works on any Windows 10/11 PC - no special hardware!
-    echo PORTABLE - just copy and run!
 ) else (
     echo.
     echo [FAILED] Build failed - see errors above
