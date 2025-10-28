@@ -1,6 +1,6 @@
 # Controller Input Mapper
 
-A C++ controller input mapper with three modes: Touch, Mouse, and Keyboard. Works with any XInput or DirectInput controller.
+A C++ controller input mapper with three modes: Touch, Mouse, and Keyboard. Works with any XInput (current version had'nt been tested) or DirectInput controller.
 
 Designed for playing Sentakki (osu! lazer mod) and anything else if controls apply.
 
@@ -29,7 +29,7 @@ Designed for playing Sentakki (osu! lazer mod) and anything else if controls app
 **Touch Mode:**
 - LB + Left Stick → Touch point 0
 - RB + Right Stick → Touch point 1
-- L3/R3 → Pointer locking
+- L3/R3 → Slider note path locking (Currently only support 90 degree and 45 degree streight slide)
 
 **Mouse Mode:**
 - Left Stick → Cursor position

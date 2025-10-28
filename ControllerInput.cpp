@@ -92,6 +92,10 @@ private:
     // Touch mode section tracking
     int currentLHeldDirection;  // Direction held when left bumper is pressed
     int currentRHeldDirection;  // Direction held when right bumper is pressed
+    double currentLHeldX;       // X position when left direction was captured
+    double currentLHeldY;       // Y position when left direction was captured
+    double currentRHeldX;       // X position when right direction was captured
+    double currentRHeldY;       // Y position when right direction was captured
     
     // Touch mode pointer locking (trigger-based)
     bool leftPointerLocked;     // Whether left touch is locked to a direction
@@ -360,15 +364,19 @@ private:
         int leftDirection = getDirection(overlayLeftAngle);
         int rightDirection = getDirection(overlayRightAngle);
         
-        // Draw direction indicators with overlap handling
-        if (leftDirection == rightDirection && leftDirection >= 0) {
+        // Draw direction indicators with overlap handling (only when sticks are active)
+        if (leftTouchActive && rightTouchActive && leftDirection == rightDirection && leftDirection >= 0) {
             // Both sticks point to same direction - draw yellow blended arc
             int maxAlpha = (overlayLeftAlpha > overlayRightAlpha) ? overlayLeftAlpha : overlayRightAlpha;
             drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(255, 255, 0), maxAlpha);
         } else {
-            // Different directions - draw each separately
-            drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(100, 150, 255), overlayLeftAlpha);
-            drawDirectionIndicator(hdc, centerX, centerY, rightDirection, RGB(255, 100, 150), overlayRightAlpha);
+            // Different directions or only one active - draw each separately
+            if (leftTouchActive && leftDirection >= 0) {
+                drawDirectionIndicator(hdc, centerX, centerY, leftDirection, RGB(100, 150, 255), overlayLeftAlpha);
+            }
+            if (rightTouchActive && rightDirection >= 0) {
+                drawDirectionIndicator(hdc, centerX, centerY, rightDirection, RGB(255, 100, 150), overlayRightAlpha);
+            }
         }
         
         // Draw both sticks at the same position (they will overlap)
@@ -732,6 +740,8 @@ private:
         // Left stick click (L3) controls left touch locking
         if (leftTriggerPressed) {
             currentLHeldDirection = lDirection; // Capture current direction when stick clicked
+            currentLHeldX = leftX; // Capture actual stick position
+            currentLHeldY = leftY;
             leftTouchActive = true; // Start touch event
             sendTouch(0, leftX, leftY, true, false); // Touch down
         }
@@ -749,6 +759,8 @@ private:
         // Right stick click (R3) controls right touch locking
         if (rightTriggerPressed) {
             currentRHeldDirection = rDirection; // Capture current direction when stick clicked
+            currentRHeldX = rightX; // Capture actual stick position
+            currentRHeldY = rightY;
             rightTouchActive = true; // Start touch event
             sendTouch(1, rightX, rightY, true, false); // Touch down
         }
@@ -767,7 +779,6 @@ private:
         if (leftPressed && !leftTouchActive) {
             leftTouchActive = true;
             sendTouch(0, leftX, leftY, true, false); // Touch down - only send once on press
-            std::cout << "Left bumper pressed: Sending Touch 0 DOWN" << std::endl;
         } else if (leftTouchActive && leftBumper) {
             // Check for pointer locking (trigger-based)
             if (leftTrigger && currentLHeldDirection >= 0) {
@@ -777,21 +788,38 @@ private:
                         leftPointerLocked = true;
                         leftLockedDirection = newLockedDirection;
                     }
-                    // Use axis-based locking for positioning - lock to direction's position
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
                     double lockedX, lockedY;
-                    if (leftLockedDirection == 0 || leftLockedDirection == 3 || leftLockedDirection == 4 || leftLockedDirection == 7) {
-                        // Y-axis lock: keep current Y, set X to direction's X position
-                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = std::sin(dirAngle * PI / 180.0);
-                        lockedY = leftY;
-                    } else {
-                        // X-axis lock: keep current X, set Y to direction's Y position
-                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = leftX;
-                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
                     }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentLHeldX; // Use captured position
+                    double heldY = currentLHeldY;
+                    double rawDx = leftX - heldX;
+                    double rawDy = leftY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
                     sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
                 } else {
                     // No locking - use current position
@@ -828,21 +856,172 @@ private:
                         leftPointerLocked = true;
                         leftLockedDirection = newLockedDirection;
                     }
-                    // Use axis-based locking for positioning - lock to direction's position
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
                     double lockedX, lockedY;
-                    if (leftLockedDirection == 0 || leftLockedDirection == 3 || leftLockedDirection == 4 || leftLockedDirection == 7) {
-                        // Y-axis lock: keep current Y, set X to direction's X position
-                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = std::sin(dirAngle * PI / 180.0);
-                        lockedY = leftY;
-                    } else {
-                        // X-axis lock: keep current X, set Y to direction's Y position
-                        double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = leftX;
-                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
                     }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentLHeldX; // Use captured position
+                    double heldY = currentLHeldY;
+                    double rawDx = leftX - heldX;
+                    double rawDy = leftY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
+                    sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (leftPointerLocked) {
+                        leftPointerLocked = false;
+                        leftLockedDirection = -1;
+                    }
+                    sendTouch(0, leftX, leftY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (leftPointerLocked) {
+                    leftPointerLocked = false;
+                    leftLockedDirection = -1;
+                    std::cout << "Left pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(0, leftX, leftY, false, false); // Touch move/update
+            }
+        }
+        
+        // Handle right bumper - touch ID 1
+        if (rightPressed && !rightTouchActive) {
+            rightTouchActive = true;
+            sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
+            std::cout << "Right bumper pressed: Sending Touch 1 DOWN" << std::endl;
+        } else if (leftTouchActive && leftBumper) {
+            // Check for pointer locking (trigger-based)
+            if (leftTrigger && currentLHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentLHeldDirection, lDirection, lAngle, newLockedDirection)) {
+                    if (!leftPointerLocked || leftLockedDirection != newLockedDirection) {
+                        leftPointerLocked = true;
+                        leftLockedDirection = newLockedDirection;
+                    }
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
+                    double lockedX, lockedY;
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
+                    }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentLHeldX; // Use captured position
+                    double heldY = currentLHeldY;
+                    double rawDx = leftX - heldX;
+                    double rawDy = leftY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
+                    sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (leftPointerLocked) {
+                        leftPointerLocked = false;
+                        leftLockedDirection = -1;
+                    }
+                    sendTouch(0, leftX, leftY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (leftPointerLocked) {
+                    leftPointerLocked = false;
+                    leftLockedDirection = -1;
+                    std::cout << "Left pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(0, leftX, leftY, false, false); // Touch move/update
+            }
+        }
+        
+        if (leftReleased && leftTouchActive) {
+            sendTouch(0, leftX, leftY, false, true); // Touch up
+            leftTouchActive = false;
+            std::cout << "Left bumper released: Sending Touch 0 UP" << std::endl;
+        }
+        
+        // Handle left trigger movement while held
+        if (leftTouchActive && leftTrigger) {
+            // Check for pointer locking (trigger-based)
+            if (currentLHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentLHeldDirection, lDirection, lAngle, newLockedDirection)) {
+                    if (!leftPointerLocked || leftLockedDirection != newLockedDirection) {
+                        leftPointerLocked = true;
+                        leftLockedDirection = newLockedDirection;
+                    }
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
+                    double lockedX, lockedY;
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
+                    }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentLHeldX; // Use captured position
+                    double heldY = currentLHeldY;
+                    double rawDx = leftX - heldX;
+                    double rawDy = leftY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
                     sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
                 } else {
                     // No locking - use current position
@@ -877,21 +1056,38 @@ private:
                         rightPointerLocked = true;
                         rightLockedDirection = newLockedDirection;
                     }
-                    // Use axis-based locking for positioning - lock to direction's position
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
                     double lockedX, lockedY;
-                    if (rightLockedDirection == 0 || rightLockedDirection == 3 || rightLockedDirection == 4 || rightLockedDirection == 7) {
-                        // Y-axis lock: keep current Y, set X to direction's X position
-                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = std::sin(dirAngle * PI / 180.0);
-                        lockedY = rightY;
-                    } else {
-                        // X-axis lock: keep current X, set Y to direction's Y position
-                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = rightX;
-                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentRHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
                     }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentRHeldX; // Use captured position
+                    double heldY = currentRHeldY;
+                    double rawDx = rightX - heldX;
+                    double rawDy = rightY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
                     sendTouch(1, lockedX, lockedY, false, false); // Touch move/update with locked position
                 } else {
                     // No locking - use current position
@@ -928,21 +1124,106 @@ private:
                         rightPointerLocked = true;
                         rightLockedDirection = newLockedDirection;
                     }
-                    // Use axis-based locking for positioning - lock to direction's position
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
                     double lockedX, lockedY;
-                    if (rightLockedDirection == 0 || rightLockedDirection == 3 || rightLockedDirection == 4 || rightLockedDirection == 7) {
-                        // Y-axis lock: keep current Y, set X to direction's X position
-                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = std::sin(dirAngle * PI / 180.0);
-                        lockedY = rightY;
-                    } else {
-                        // X-axis lock: keep current X, set Y to direction's Y position
-                        double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                        if (dirAngle >= 360.0) dirAngle -= 360.0;
-                        lockedX = rightX;
-                        lockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentRHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
                     }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentRHeldX; // Use captured position
+                    double heldY = currentRHeldY;
+                    double rawDx = rightX - heldX;
+                    double rawDy = rightY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
+                    sendTouch(1, lockedX, lockedY, false, false); // Touch move/update with locked position
+                } else {
+                    // No locking - use current position
+                    if (rightPointerLocked) {
+                        rightPointerLocked = false;
+                        rightLockedDirection = -1;
+                    }
+                    sendTouch(1, rightX, rightY, false, false); // Touch move/update
+                }
+            } else {
+                // No trigger pressed - use current position
+                if (rightPointerLocked) {
+                    rightPointerLocked = false;
+                    rightLockedDirection = -1;
+                    std::cout << "Right pointer UNLOCKED" << std::endl;
+                }
+                sendTouch(1, rightX, rightY, false, false); // Touch move/update
+            }
+        }
+        
+        if (rightReleased && rightTouchActive) {
+            sendTouch(1, rightX, rightY, false, true); // Touch up
+            rightTouchActive = false;
+            std::cout << "Right bumper released: Sending Touch 1 UP" << std::endl;
+        }
+        
+        // Handle right trigger movement while held
+        if (rightTouchActive && rightTrigger) {
+            // Check for pointer locking (trigger-based)
+            if (currentRHeldDirection >= 0) {
+                int newLockedDirection;
+                if (checkPointerLock(currentRHeldDirection, rDirection, rAngle, newLockedDirection)) {
+                    if (!rightPointerLocked || rightLockedDirection != newLockedDirection) {
+                        rightPointerLocked = true;
+                        rightLockedDirection = newLockedDirection;
+                    }
+                    // Use path projection for positioning - project raw stick onto path from held to adjacent
+                    double lockedX, lockedY;
+                    
+                    // Calculate the path vector from held direction to the chosen adjacent direction
+                    double heldAngle = (currentRHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (heldAngle >= 360.0) heldAngle -= 360.0;
+                    
+                    double endAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                    if (endAngle >= 360.0) endAngle -= 360.0;
+                    
+                    // Calculate path direction vector (from held to adjacent)
+                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                    
+                    // Normalize the path vector
+                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                    if (pathLength > 0) {
+                        pathX /= pathLength;
+                        pathY /= pathLength;
+                    }
+                    
+                    // Calculate locked position along the path segment (from held to adjacent)
+                    double heldX = currentRHeldX; // Use captured position
+                    double heldY = currentRHeldY;
+                    double rawDx = rightX - heldX;
+                    double rawDy = rightY - heldY;
+                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                    // Clamp t to [0, pathLength] to stay within the segment
+                    if (t < 0.0) t = 0.0;
+                    if (t > pathLength) t = pathLength;
+                    lockedX = heldX + t * pathX;
+                    lockedY = heldY + t * pathY;
                     sendTouch(1, lockedX, lockedY, false, false); // Touch move/update with locked position
                 } else {
                     // No locking - use current position
@@ -1204,20 +1485,36 @@ private:
         // Calculate active touch pointer positions
         if (leftTouchActive) {
             if (leftPointerLocked && currentLHeldDirection >= 0) {
-                // Use axis-based locking for visual representation - lock to direction's position
-                if (leftLockedDirection == 0 || leftLockedDirection == 3 || leftLockedDirection == 4 || leftLockedDirection == 7) {
-                    // Y-axis lock: keep current Y, set X to direction's X position
-                    double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                    if (dirAngle >= 360.0) dirAngle -= 360.0;
-                    overlayLeftLockedX = std::sin(dirAngle * PI / 180.0);
-                    overlayLeftLockedY = leftY;
-                } else {
-                    // X-axis lock: keep current X, set Y to direction's Y position
-                    double dirAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                    if (dirAngle >= 360.0) dirAngle -= 360.0;
-                    overlayLeftLockedX = leftX;
-                    overlayLeftLockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                // Use path projection for visual representation - project raw stick onto path from held to adjacent
+                // Calculate the path vector from held direction to the chosen adjacent direction
+                double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (heldAngle >= 360.0) heldAngle -= 360.0;
+                
+                double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (endAngle >= 360.0) endAngle -= 360.0;
+                
+                // Calculate path direction vector (from held to adjacent)
+                double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                
+                // Normalize the path vector
+                double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                if (pathLength > 0) {
+                    pathX /= pathLength;
+                    pathY /= pathLength;
                 }
+                
+                // Calculate locked position along the path segment (from held to adjacent)
+                double heldX = currentLHeldX; // Use captured position
+                double heldY = currentLHeldY;
+                double rawDx = leftX - heldX;
+                double rawDy = leftY - heldY;
+                double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                // Clamp t to [0, pathLength] to stay within the segment
+                if (t < 0.0) t = 0.0;
+                if (t > pathLength) t = pathLength;
+                overlayLeftLockedX = heldX + t * pathX;
+                overlayLeftLockedY = heldY + t * pathY;
             } else {
                 // Bumper pressed or trigger without locking - show current stick position
                 overlayLeftLockedX = leftX;
@@ -1230,20 +1527,36 @@ private:
         
         if (rightTouchActive) {
             if (rightPointerLocked && currentRHeldDirection >= 0) {
-                // Use axis-based locking for visual representation - lock to direction's position
-                if (rightLockedDirection == 0 || rightLockedDirection == 3 || rightLockedDirection == 4 || rightLockedDirection == 7) {
-                    // Y-axis lock: keep current Y, set X to direction's X position
-                    double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                    if (dirAngle >= 360.0) dirAngle -= 360.0;
-                    overlayRightLockedX = std::sin(dirAngle * PI / 180.0);
-                    overlayRightLockedY = rightY;
-                } else {
-                    // X-axis lock: keep current X, set Y to direction's Y position
-                    double dirAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5; // Add 22.5° offset
-                    if (dirAngle >= 360.0) dirAngle -= 360.0;
-                    overlayRightLockedX = rightX;
-                    overlayRightLockedY = std::cos(dirAngle * PI / 180.0); // Don't invert Y for correct direction mapping
+                // Use path projection for visual representation - project raw stick onto path from held to adjacent
+                // Calculate the path vector from held direction to the chosen adjacent direction
+                double heldAngle = (currentRHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (heldAngle >= 360.0) heldAngle -= 360.0;
+                
+                double endAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (endAngle >= 360.0) endAngle -= 360.0;
+                
+                // Calculate path direction vector (from held to adjacent)
+                double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                
+                // Normalize the path vector
+                double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                if (pathLength > 0) {
+                    pathX /= pathLength;
+                    pathY /= pathLength;
                 }
+                
+                // Calculate locked position along the path segment (from held to adjacent)
+                double heldX = currentRHeldX; // Use captured position
+                double heldY = currentRHeldY;
+                double rawDx = rightX - heldX;
+                double rawDy = rightY - heldY;
+                double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
+                // Clamp t to [0, pathLength] to stay within the segment
+                if (t < 0.0) t = 0.0;
+                if (t > pathLength) t = pathLength;
+                overlayRightLockedX = heldX + t * pathX;
+                overlayRightLockedY = heldY + t * pathY;
             } else {
                 // Bumper pressed or trigger without locking - show current stick position
                 overlayRightLockedX = rightX;
@@ -1607,21 +1920,47 @@ private:
     bool checkPointerLock(int heldDirection, int currentDirection, double currentAngle, int& lockedDirection) {
         if (heldDirection < 0 || currentDirection < 0) return false;
         
-        // Simple directional lock: Y-axis for directions 0,3,4,7 and X-axis for 1,2,5,6
-        bool isYAxisDirection = (heldDirection == 0 || heldDirection == 3 || heldDirection == 4 || heldDirection == 7);
-        bool isXAxisDirection = (heldDirection == 1 || heldDirection == 2 || heldDirection == 5 || heldDirection == 6);
+        // Path locking: lock to the straight line path between held direction and its adjacent opposites
+        // The path starts from the held direction and goes to the adjacent directions of its opposite
+        // Direction 0 -> opposite 4 -> adjacents 3,5 (path: 0->3 or 0->5)
+        // Direction 1 -> opposite 5 -> adjacents 4,6 (path: 1->4 or 1->6)
+        // Direction 2 -> opposite 6 -> adjacents 5,7 (path: 2->5 or 2->7)
+        // Direction 3 -> opposite 7 -> adjacents 6,0 (path: 3->6 or 3->0)
+        // Direction 4 -> opposite 0 -> adjacents 7,1 (path: 4->7 or 4->1)
+        // Direction 5 -> opposite 1 -> adjacents 0,2 (path: 5->0 or 5->2)
+        // Direction 6 -> opposite 2 -> adjacents 1,3 (path: 6->1 or 6->3)
+        // Direction 7 -> opposite 3 -> adjacents 2,4 (path: 7->2 or 7->4)
         
-        if (isYAxisDirection) {
-            // Lock to Y-axis: keep current Y, set X to 0
-            lockedDirection = heldDirection; // Keep the same direction for visual consistency
-            return true;
-        } else if (isXAxisDirection) {
-            // Lock to X-axis: keep current X, set Y to 0  
-            lockedDirection = heldDirection; // Keep the same direction for visual consistency
-            return true;
+        int oppositeDirection = (heldDirection + 4) % 8;
+        int leftAdjacent = (oppositeDirection - 1 + 8) % 8;
+        int rightAdjacent = (oppositeDirection + 1) % 8;
+        
+        // Calculate angles for the held direction and the two adjacent directions
+        double heldAngle = (heldDirection * DEGREES_PER_SECTOR) + 22.5;
+        if (heldAngle >= 360.0) heldAngle -= 360.0;
+        
+        double leftAngle = (leftAdjacent * DEGREES_PER_SECTOR) + 22.5;
+        if (leftAngle >= 360.0) leftAngle -= 360.0;
+        
+        double rightAngle = (rightAdjacent * DEGREES_PER_SECTOR) + 22.5;
+        if (rightAngle >= 360.0) rightAngle -= 360.0;
+        
+        // Determine which adjacent direction the current angle is closer to
+        double angleDiffToLeft = std::abs(currentAngle - leftAngle);
+        if (angleDiffToLeft > 180.0) angleDiffToLeft = 360.0 - angleDiffToLeft;
+        
+        double angleDiffToRight = std::abs(currentAngle - rightAngle);
+        if (angleDiffToRight > 180.0) angleDiffToRight = 360.0 - angleDiffToRight;
+        
+        // Choose the closer adjacent direction as the end point
+        // The path will be from heldDirection to the chosen adjacent direction
+        if (angleDiffToLeft < angleDiffToRight) {
+            lockedDirection = leftAdjacent;
+        } else {
+            lockedDirection = rightAdjacent;
         }
         
-        return false;
+        return true;
     }
 
     // ========== Debug Info Display ==========
