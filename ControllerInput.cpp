@@ -897,8 +897,9 @@ private:
                     }
                     
                     // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentLHeldX; // Use captured position
-                    double heldY = currentLHeldY;
+                    // Use center of direction arc instead of captured position
+                    double heldX, heldY;
+                    getDirectionArcCenter(currentLHeldDirection, heldX, heldY);
                     double rawDx = leftX - heldX;
                     double rawDy = leftY - heldY;
                     double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -965,8 +966,9 @@ private:
                     }
                     
                     // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentLHeldX; // Use captured position
-                    double heldY = currentLHeldY;
+                    // Use center of direction arc instead of captured position
+                    double heldX, heldY;
+                    getDirectionArcCenter(currentLHeldDirection, heldX, heldY);
                     double rawDx = leftX - heldX;
                     double rawDy = leftY - heldY;
                     double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1033,8 +1035,9 @@ private:
                     }
                     
                     // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentLHeldX; // Use captured position
-                    double heldY = currentLHeldY;
+                    // Use center of direction arc instead of captured position
+                    double heldX, heldY;
+                    getDirectionArcCenter(currentLHeldDirection, heldX, heldY);
                     double rawDx = leftX - heldX;
                     double rawDy = leftY - heldY;
                     double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1099,8 +1102,9 @@ private:
                     }
                     
                     // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentRHeldX; // Use captured position
-                    double heldY = currentRHeldY;
+                    // Use center of direction arc instead of captured position
+                    double heldX, heldY;
+                    getDirectionArcCenter(currentRHeldDirection, heldX, heldY);
                     double rawDx = rightX - heldX;
                     double rawDy = rightY - heldY;
                     double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1167,8 +1171,9 @@ private:
                     }
                     
                     // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentRHeldX; // Use captured position
-                    double heldY = currentRHeldY;
+                    // Use center of direction arc instead of captured position
+                    double heldX, heldY;
+                    getDirectionArcCenter(currentRHeldDirection, heldX, heldY);
                     double rawDx = rightX - heldX;
                     double rawDy = rightY - heldY;
                     double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1235,8 +1240,9 @@ private:
                     }
                     
                     // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentRHeldX; // Use captured position
-                    double heldY = currentRHeldY;
+                    // Use center of direction arc instead of captured position
+                    double heldX, heldY;
+                    getDirectionArcCenter(currentRHeldDirection, heldX, heldY);
                     double rawDx = rightX - heldX;
                     double rawDy = rightY - heldY;
                     double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1291,7 +1297,9 @@ private:
                     pathY /= pathLength;
                 }
                 
-                double heldX = currentLHeldX, heldY = currentLHeldY;
+                // Use center of direction arc instead of captured position
+                double heldX, heldY;
+                getDirectionArcCenter(currentLHeldDirection, heldX, heldY);
                 double rawDx = leftX - heldX;
                 double rawDy = leftY - heldY;
                 double t = rawDx * pathX + rawDy * pathY;
@@ -1317,7 +1325,9 @@ private:
                     pathY /= pathLength;
                 }
                 
-                double heldX = currentRHeldX, heldY = currentRHeldY;
+                // Use center of direction arc instead of captured position
+                double heldX, heldY;
+                getDirectionArcCenter(currentRHeldDirection, heldX, heldY);
                 double rawDx = rightX - heldX;
                 double rawDy = rightY - heldY;
                 double t = rawDx * pathX + rawDy * pathY;
@@ -1594,8 +1604,9 @@ private:
                 }
                 
                 // Calculate locked position along the path segment (from held to adjacent)
-                double heldX = currentLHeldX; // Use captured position
-                double heldY = currentLHeldY;
+                // Use center of direction arc instead of captured position
+                double heldX, heldY;
+                getDirectionArcCenter(currentLHeldDirection, heldX, heldY);
                 double rawDx = leftX - heldX;
                 double rawDy = leftY - heldY;
                 double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1636,8 +1647,9 @@ private:
                 }
                 
                 // Calculate locked position along the path segment (from held to adjacent)
-                double heldX = currentRHeldX; // Use captured position
-                double heldY = currentRHeldY;
+                // Use center of direction arc instead of captured position
+                double heldX, heldY;
+                getDirectionArcCenter(currentRHeldDirection, heldX, heldY);
                 double rawDx = rightX - heldX;
                 double rawDy = rightY - heldY;
                 double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
@@ -1999,6 +2011,29 @@ private:
     }
 
     /**
+     * Get the center position of a direction arc
+     * @param direction The direction (0-7)
+     * @param centerX Reference to store the X coordinate (-1.0 to 1.0)
+     * @param centerY Reference to store the Y coordinate (-1.0 to 1.0)
+     */
+    void getDirectionArcCenter(int direction, double& centerX, double& centerY) {
+        if (direction < 0 || direction >= DIRECTION_SECTORS) {
+            centerX = 0.0;
+            centerY = 0.0;
+            return;
+        }
+        
+        // Calculate the center angle of this direction
+        double centerAngle = (direction * DEGREES_PER_SECTOR) + 22.5;
+        if (centerAngle >= 360.0) centerAngle -= 360.0;
+        
+        // Convert to radians and calculate position at full radius (1.0)
+        double angleRad = centerAngle * PI / 180.0;
+        centerX = std::sin(angleRad);  // X = sin(angle)
+        centerY = std::cos(angleRad);  // Y = cos(angle)
+    }
+
+    /**
      * Check if pointer should be locked based on stick movement
      * @param heldDirection The direction when bumper was first pressed
      * @param currentDirection Current stick direction
@@ -2132,28 +2167,7 @@ private:
             }
             info += "\r\n";
             
-            // Bumpers and Triggers
-            info += "BUMPERS & TRIGGERS:\r\n";
-            if (hasXInputController) {
-                info += "  LB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? "PRESSED" : "---") + "\r\n";
-                info += "  RB: " + std::string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? "PRESSED" : "---") + "\r\n";
-                info += "  LT: " + std::string((xInputState.Gamepad.bLeftTrigger > 0) ? "PRESSED" : "---") + "\r\n";
-                info += "  RT: " + std::string((xInputState.Gamepad.bRightTrigger > 0) ? "PRESSED" : "---") + "\r\n\r\n";
-            } else if (diState) {
-                info += "  LB: " + std::string((diState->rgbButtons[4] & 0x80) ? "PRESSED" : "---") + "\r\n";
-                info += "  RB: " + std::string((diState->rgbButtons[5] & 0x80) ? "PRESSED" : "---") + "\r\n";
-                info += "  LT: " + std::string((diState->rglSlider[0] > 0) || (diState->lRx > 0) ? "PRESSED" : "---") + "\r\n";
-                info += "  RT: " + std::string((diState->rglSlider[1] > 0) || (diState->lRy > 0) ? "PRESSED" : "---") + "\r\n";
-                info += "\r\n";
-                info += "DIRECTINPUT AXES DEBUG:\r\n";
-                char buf[128];
-                sprintf_s(buf, "  Slider[0]: %d, Slider[1]: %d\r\n", diState->rglSlider[0], diState->rglSlider[1]);
-                info += buf;
-                sprintf_s(buf, "  lRx: %d, lRy: %d, lRz: %d\r\n", diState->lRx, diState->lRy, diState->lRz);
-                info += buf;
-                info += "\r\n";
-            }
-            
+
             // Pointer locking status
             info += "POINTER LOCKING:\r\n";
             info += "  Left Lock: " + std::string(leftPointerLocked ? "ACTIVE" : "---") + "\r\n";
@@ -2253,58 +2267,6 @@ private:
         std::cout << "[INFO] " << message << std::endl;
     }
     
-    std::string getXInputDebugInfo() {
-        std::string info = "STICK VALUES:\r\n";
-        info += "  Left X: " + std::to_string(xInputState.Gamepad.sThumbLX) + "\r\n";
-        info += "  Left Y: " + std::to_string(xInputState.Gamepad.sThumbLY) + "\r\n";
-        info += "  Right X: " + std::to_string(xInputState.Gamepad.sThumbRX) + "\r\n";
-        info += "  Right Y: " + std::to_string(xInputState.Gamepad.sThumbRY) + "\r\n\r\n";
-        
-        return info;
-    }
-    
-    std::string getDirectInputDebugInfo(const DIJOYSTATE2* diState) {
-        std::string info = "STICK VALUES:\r\n";
-        info += "  Left X: " + std::to_string(diState->lX) + "\r\n";
-        info += "  Left Y: " + std::to_string(diState->lY) + "\r\n";
-        info += "  Right X: " + std::to_string(diState->lZ) + "\r\n";
-        info += "  Right Y: " + std::to_string(diState->lRz) + "\r\n\r\n";
-        
-        return info;
-    }
-    
-    std::string getButtonDebugInfo(const DIJOYSTATE2* diState) {
-        std::string info = "BUTTONS:\r\n";
-        if (hasXInputController) {
-            info += "Left Shoulder: " + std::to_string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) ? 1 : 0) + "\r\n";
-            info += "Right Shoulder: " + std::to_string((xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? 1 : 0) + "\r\n";
-            info += "All Buttons: ";
-            if (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_A) info += "A ";
-            if (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_B) info += "B ";
-            if (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_X) info += "X ";
-            if (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_Y) info += "Y ";
-            if (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) info += "LB ";
-            if (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) info += "RB ";
-            info += "\r\n\r\n";
-        } else if (diState) {
-            info += "Button 4: " + std::to_string((diState->rgbButtons[4] & 0x80) ? 1 : 0) + "\r\n";
-            info += "Button 5: " + std::to_string((diState->rgbButtons[5] & 0x80) ? 1 : 0) + "\r\n";
-            info += "All Buttons: ";
-            for (int i = 0; i < 8; i++) {
-                if (diState->rgbButtons[i] & 0x80) {
-                    info += std::to_string(i) + " ";
-                }
-            }
-            info += "\r\n\r\n";
-        } else {
-            info += "Button 4: " + std::to_string(0) + "\r\n";
-            info += "Button 5: " + std::to_string(0) + "\r\n";
-            info += "All Buttons: ";
-            info += "\r\n\r\n";
-        }
-        return info;
-    }
-
 public:
     // ========== Main Application Loop ==========
     
