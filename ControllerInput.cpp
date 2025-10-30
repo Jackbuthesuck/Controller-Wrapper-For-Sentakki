@@ -648,61 +648,88 @@ private:
         himetricY = (pixelY * 2540) / dpiY;
     }
 
+    InjectedInputTouchInfo createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
+        InjectedInputTouchInfo touchInfo{};
+        
+        // Get screen coordinates (in pixels)
+        LONG touchX, touchY;
+        getTouchCoordinates(stickX, stickY, touchX, touchY);
+        
+        // Create pixel location structure
+        InjectedInputPoint pixelLocation{};
+        pixelLocation.PositionX = touchX;
+        pixelLocation.PositionY = touchY;
+        
+        // Create pointer info structure
+        InjectedInputPointerInfo pointerInfo{};
+        pointerInfo.PointerId = touchId;
+        pointerInfo.PixelLocation = pixelLocation;
+        
+        // Set pointer options/flags (direct assignment for struct fields)
+        if (isDown) {
+            pointerInfo.PointerOptions =
+                InjectedInputPointerOptions::PointerDown |
+                InjectedInputPointerOptions::InContact |
+                InjectedInputPointerOptions::InRange |
+                InjectedInputPointerOptions::New;
+        } else if (isUp) {
+            pointerInfo.PointerOptions = InjectedInputPointerOptions::PointerUp;
+        } else {
+            pointerInfo.PointerOptions =
+                InjectedInputPointerOptions::Update |
+                InjectedInputPointerOptions::InContact |
+                InjectedInputPointerOptions::InRange;
+        }
+        
+        // InjectedInputTouchInfo uses setter methods (not direct assignment)
+        touchInfo.PointerInfo(pointerInfo);
+        
+        // Set touch parameters (using setter methods)
+        touchInfo.Pressure(1.0);  // Full pressure
+        touchInfo.TouchParameters(
+            InjectedInputTouchParameters::Pressure |
+            InjectedInputTouchParameters::Contact
+        );
+        
+        // Set contact area (30x30 pixels - finger-sized)
+        InjectedInputRectangle contactArea{};
+        contactArea.Left = 15;
+        contactArea.Top = 15;
+        contactArea.Bottom = 15;
+        contactArea.Right = 15;
+        touchInfo.Contact(contactArea);
+        
+        return touchInfo;
+    }
+
+    void sendMultipleTouches(const std::vector<InjectedInputTouchInfo>& touches) {
+        if (!inputInjectorInitialized || !inputInjector || touches.empty()) return;
+        
+        try {
+            inputInjector.InjectTouchInput(touches);
+        } catch (hresult_error const& ex) {
+            static int errorCount = 0;
+            if (errorCount < 3) {
+                std::wcout << L"Touch injection failed: " << ex.message().c_str() << std::endl;
+                std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+                errorCount++;
+                if (errorCount >= 3) {
+                    std::cout << "(Further errors suppressed)" << std::endl;
+                }
+            }
+        }
+    }
+
     void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
         if (!inputInjectorInitialized || !inputInjector) return;
         
+        // Use the helper function to create touch info
+        InjectedInputTouchInfo touchInfo = createTouchInfo(touchId, stickX, stickY, isDown, isUp);
+        
         try {
-            // Get screen coordinates (in pixels)
+            // Get coordinates for debug output
             LONG touchX, touchY;
             getTouchCoordinates(stickX, stickY, touchX, touchY);
-            
-            // Create touch info using UWP API (C++/WinRT)
-            // In C++/WinRT: getter = Property(), setter = Property(value)
-            InjectedInputTouchInfo touchInfo{};
-            
-            // Create pixel location structure
-            InjectedInputPoint pixelLocation{};
-            pixelLocation.PositionX = touchX;
-            pixelLocation.PositionY = touchY;
-            
-            // Create pointer info structure
-            InjectedInputPointerInfo pointerInfo{};
-            pointerInfo.PointerId = touchId;
-            pointerInfo.PixelLocation = pixelLocation;
-            
-            // Set pointer options/flags (direct assignment for struct fields)
-            if (isDown) {
-                pointerInfo.PointerOptions =
-                    InjectedInputPointerOptions::PointerDown |
-                    InjectedInputPointerOptions::InContact |
-                    InjectedInputPointerOptions::InRange |
-                    InjectedInputPointerOptions::New;
-            } else if (isUp) {
-                pointerInfo.PointerOptions = InjectedInputPointerOptions::PointerUp;
-            } else {
-                pointerInfo.PointerOptions =
-                    InjectedInputPointerOptions::Update |
-                    InjectedInputPointerOptions::InContact |
-                    InjectedInputPointerOptions::InRange;
-            }
-            
-            // InjectedInputTouchInfo uses setter methods (not direct assignment)
-            touchInfo.PointerInfo(pointerInfo);
-            
-            // Set touch parameters (using setter methods)
-            touchInfo.Pressure(1.0);  // Full pressure
-            touchInfo.TouchParameters(
-                InjectedInputTouchParameters::Pressure |
-                InjectedInputTouchParameters::Contact
-            );
-            
-            // Set contact area (30x30 pixels - finger-sized)
-            InjectedInputRectangle contactArea{};
-            contactArea.Left = 15;
-            contactArea.Top = 15;
-            contactArea.Bottom = 15;
-            contactArea.Right = 15;
-            touchInfo.Contact(contactArea);
             
             // Create collection and inject
             std::vector<InjectedInputTouchInfo> touchData;
@@ -733,6 +760,41 @@ private:
             static int errorCount = 0;
             if (errorCount < 3) {
                 std::wcout << L"Touch injection failed: " << ex.message().c_str() << std::endl;
+                std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+                errorCount++;
+                if (errorCount >= 3) {
+                    std::cout << "(Further errors suppressed)" << std::endl;
+                }
+            }
+        }
+    }
+
+    void sendBothTouchesIfActive(double leftX, double leftY, double rightX, double rightY,
+                                 double leftLockedX, double leftLockedY, bool leftLocked,
+                                 double rightLockedX, double rightLockedY, bool rightLocked) {
+        // Only send both touches if both are active
+        if (!leftTouchActive || !rightTouchActive) return;
+        if (!inputInjectorInitialized || !inputInjector) return;
+        
+        try {
+            std::vector<InjectedInputTouchInfo> touchData;
+            
+            // Add left touch
+            double leftSendX = leftLocked ? leftLockedX : leftX;
+            double leftSendY = leftLocked ? leftLockedY : leftY;
+            touchData.push_back(createTouchInfo(0, leftSendX, leftSendY, false, false));
+            
+            // Add right touch
+            double rightSendX = rightLocked ? rightLockedX : rightX;
+            double rightSendY = rightLocked ? rightLockedY : rightY;
+            touchData.push_back(createTouchInfo(1, rightSendX, rightSendY, false, false));
+            
+            // Send both touches together
+            sendMultipleTouches(touchData);
+        } catch (hresult_error const& ex) {
+            static int errorCount = 0;
+            if (errorCount < 3) {
+                std::wcout << L"Multi-touch injection failed: " << ex.message().c_str() << std::endl;
                 std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
                 errorCount++;
                 if (errorCount >= 3) {
@@ -875,72 +937,6 @@ private:
         if (leftTouchActive && leftTrigger) {
             // Check for pointer locking (trigger-based)
             if (currentLHeldDirection >= 0) {
-                int newLockedDirection;
-                if (checkPointerLock(currentLHeldDirection, lDirection, lAngle, newLockedDirection)) {
-                    if (!leftPointerLocked || leftLockedDirection != newLockedDirection) {
-                        leftPointerLocked = true;
-                        leftLockedDirection = newLockedDirection;
-                    }
-                    // Use path projection for positioning - project raw stick onto path from held to adjacent
-                    double lockedX, lockedY;
-                    
-                    // Calculate the path vector from held direction to the chosen adjacent direction
-                    double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
-                    if (heldAngle >= 360.0) heldAngle -= 360.0;
-                    
-                    double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
-                    if (endAngle >= 360.0) endAngle -= 360.0;
-                    
-                    // Calculate path direction vector (from held to adjacent)
-                    double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
-                    double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
-                    
-                    // Normalize the path vector
-                    double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
-                    if (pathLength > 0) {
-                        pathX /= pathLength;
-                        pathY /= pathLength;
-                    }
-                    
-                    // Calculate locked position along the path segment (from held to adjacent)
-                    double heldX = currentLHeldX; // Use captured position
-                    double heldY = currentLHeldY;
-                    double rawDx = leftX - heldX;
-                    double rawDy = leftY - heldY;
-                    double t = rawDx * pathX + rawDy * pathY; // projection length along unit path
-                    // Clamp t to [0, pathLength] to stay within the segment
-                    if (t < 0.0) t = 0.0;
-                    if (t > pathLength) t = pathLength;
-                    lockedX = heldX + t * pathX;
-                    lockedY = heldY + t * pathY;
-                    sendTouch(0, lockedX, lockedY, false, false); // Touch move/update with locked position
-                } else {
-                    // No locking - use current position
-                    if (leftPointerLocked) {
-                        leftPointerLocked = false;
-                        leftLockedDirection = -1;
-                    }
-                    sendTouch(0, leftX, leftY, false, false); // Touch move/update
-                }
-            } else {
-                // No trigger pressed - use current position
-                if (leftPointerLocked) {
-                    leftPointerLocked = false;
-                    leftLockedDirection = -1;
-                    std::cout << "Left pointer UNLOCKED" << std::endl;
-                }
-                sendTouch(0, leftX, leftY, false, false); // Touch move/update
-            }
-        }
-        
-        // Handle right bumper - touch ID 1
-        if (rightPressed && !rightTouchActive) {
-            rightTouchActive = true;
-            sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
-            std::cout << "Right bumper pressed: Sending Touch 1 DOWN" << std::endl;
-        } else if (leftTouchActive && leftBumper) {
-            // Check for pointer locking (trigger-based)
-            if (leftTrigger && currentLHeldDirection >= 0) {
                 int newLockedDirection;
                 if (checkPointerLock(currentLHeldDirection, lDirection, lAngle, newLockedDirection)) {
                     if (!leftPointerLocked || leftLockedDirection != newLockedDirection) {
@@ -1265,8 +1261,76 @@ private:
                     rightLockedDirection = -1;
                     std::cout << "Right pointer UNLOCKED" << std::endl;
                 }
-                sendTouch(1, rightX, rightY, false, false); // Touch move/update
+                // Skip individual send if both touches are active (will send both together at end)
+                if (!leftTouchActive) {
+                    sendTouch(1, rightX, rightY, false, false); // Touch move/update
+                }
             }
+        }
+        
+        // Send both touches together if both are active (for true multi-touch support)
+        // This ensures both touches can be held independently
+        if (leftTouchActive && rightTouchActive) {
+            // Calculate positions for both touches, taking locks into account
+            double leftSendX = leftX, leftSendY = leftY;
+            double rightSendX = rightX, rightSendY = rightY;
+            
+            // Check if left touch is locked
+            if (leftPointerLocked && currentLHeldDirection >= 0) {
+                // Calculate locked position
+                double heldAngle = (currentLHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (heldAngle >= 360.0) heldAngle -= 360.0;
+                double endAngle = (leftLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (endAngle >= 360.0) endAngle -= 360.0;
+                
+                double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                if (pathLength > 0) {
+                    pathX /= pathLength;
+                    pathY /= pathLength;
+                }
+                
+                double heldX = currentLHeldX, heldY = currentLHeldY;
+                double rawDx = leftX - heldX;
+                double rawDy = leftY - heldY;
+                double t = rawDx * pathX + rawDy * pathY;
+                if (t < 0.0) t = 0.0;
+                if (t > pathLength) t = pathLength;
+                leftSendX = heldX + t * pathX;
+                leftSendY = heldY + t * pathY;
+            }
+            
+            // Check if right touch is locked
+            if (rightPointerLocked && currentRHeldDirection >= 0) {
+                // Calculate locked position
+                double heldAngle = (currentRHeldDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (heldAngle >= 360.0) heldAngle -= 360.0;
+                double endAngle = (rightLockedDirection * DEGREES_PER_SECTOR) + 22.5;
+                if (endAngle >= 360.0) endAngle -= 360.0;
+                
+                double pathX = std::sin(endAngle * PI / 180.0) - std::sin(heldAngle * PI / 180.0);
+                double pathY = std::cos(endAngle * PI / 180.0) - std::cos(heldAngle * PI / 180.0);
+                double pathLength = std::sqrt(pathX * pathX + pathY * pathY);
+                if (pathLength > 0) {
+                    pathX /= pathLength;
+                    pathY /= pathLength;
+                }
+                
+                double heldX = currentRHeldX, heldY = currentRHeldY;
+                double rawDx = rightX - heldX;
+                double rawDy = rightY - heldY;
+                double t = rawDx * pathX + rawDy * pathY;
+                if (t < 0.0) t = 0.0;
+                if (t > pathLength) t = pathLength;
+                rightSendX = heldX + t * pathX;
+                rightSendY = heldY + t * pathY;
+            }
+            
+            // Send both touches together
+            sendBothTouchesIfActive(leftSendX, leftSendY, rightSendX, rightSendY,
+                                    leftSendX, leftSendY, leftPointerLocked,
+                                    rightSendX, rightSendY, rightPointerLocked);
         }
         
         // Update previous button states
