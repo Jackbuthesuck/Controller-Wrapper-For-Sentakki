@@ -4,6 +4,7 @@ A C++ controller input mapper with three modes: Touch, Mouse, and Keyboard. Work
 
 Designed for playing Sentakki (osu! lazer mod) and anything else if controls apply.
 
+Now with multi-screen support (Why not (this took me 2 days)).
 ---
 
 
@@ -26,17 +27,18 @@ Designed for playing Sentakki (osu! lazer mod) and anything else if controls app
 
 ## Controls
 
-**Touch Mode:**
-- LB + Left Stick → Touch point 0
-- RB + Right Stick → Touch point 1
-- L3/R3 → Slider note path locking (Currently only support 90 degree and 45 degree streight slide)
+**Touch Mode (Recommended):**
+- Stick → Aim
+- L1/R1 → Touch
+- L2/R2 → Slide note path locking (Currently only support 90 degree and 45 degree streight slide, hold the trigger then treat them as if they were edge slide)
+- L3/R3 → Wide touch (for touch note and such)
 
-**Mouse Mode:**
+**Mouse Mode (Legacy):**
 - Left Stick → Cursor position
 - LB → Left mouse button
 - RB → Right mouse button
 
-**Keyboard Mode:**
+**Keyboard Mode (Legacy):**
 - LB + Left Stick → Keys 1-8 (left side)
 - RB + Right Stick → Keys 1-8 (right side)
 
@@ -59,8 +61,17 @@ build.bat
 
 **Manual build:**
 ```bash
-cl /EHsc /std:c++17 /await ControllerInput.cpp /link dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib msimg32.lib windowsapp.lib /out:ControllerInput.exe
+cl /EHsc /std:c++17 /await /c main.cpp ControllerMapper.cpp TouchMode.cpp MouseMode.cpp KeyboardMode.cpp
+link main.obj ControllerMapper.obj TouchMode.obj MouseMode.obj KeyboardMode.obj dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib msimg32.lib windowsapp.lib /out:ControllerInput.exe
 ```
+
+**Note:** The code is split into multiple files:
+- `main.cpp` - Entry point and mode selection
+- `ControllerMapper.cpp` - Core controller logic, GUI, overlay rendering
+- `TouchMode.cpp` - Touch input implementation
+- `MouseMode.cpp` - Mouse input implementation  
+- `KeyboardMode.cpp` - Keyboard input implementation
+- `ControllerInput.h` - Header with all declarations
 
 ---
 
