@@ -5,8 +5,6 @@ A C++ controller input mapper with three modes: Touch, Mouse, and Keyboard. Work
 Designed for playing Sentakki (osu! lazer mod) and anything else if controls apply.
 
 I love maimai.
----
-
 
 ## Quick Start
 
