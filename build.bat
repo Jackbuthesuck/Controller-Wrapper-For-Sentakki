@@ -1,5 +1,6 @@
 @echo off
 echo Building ControllerInput.exe...
+taskkill /F /IM ControllerInput.exe >nul 2>&1
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" >nul
 
 if %ERRORLEVEL% NEQ 0 (
@@ -11,7 +12,7 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo Compiling source files...
-cl /EHsc /std:c++17 /await /nologo /c main.cpp ControllerMapper.cpp TouchMode.cpp MouseMode.cpp KeyboardMode.cpp 2>&1
+cl /EHsc /std:c++17 /await /nologo /MP /c main.cpp ControllerMapper.cpp TouchMode.cpp MouseMode.cpp KeyboardMode.cpp 2>&1
 set COMPILE_ERROR=%ERRORLEVEL%
 if %COMPILE_ERROR% NEQ 0 (
     echo.

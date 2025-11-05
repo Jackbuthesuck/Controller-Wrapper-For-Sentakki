@@ -142,6 +142,11 @@ private:
     bool l3TouchActive;  // Whether L3 5-touch pattern is active
     bool r3TouchActive;  // Whether R3 5-touch pattern is active
     
+    // All 20 touch tracking (0-19) for debug overlay
+    bool touchActive[20];  // Whether each touch is active
+    double touchX[20];     // X position of each touch (stick coordinates)
+    double touchY[20];     // Y position of each touch (stick coordinates)
+    
     // Mouse mode state
     bool mouseButtonPressed;
     bool alternateFrame;  // For dual-stick alternating mode
@@ -165,7 +170,7 @@ private:
     static constexpr double DEGREES_PER_SECTOR = 45.0;  // 360° / 8 = 45°
     static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 16;  // Pixel radius for stick indicators
     static constexpr int OVERLAY_LOCKED_INDICATOR_RADIUS = 14;  // Pixel radius for locked indicators (smaller)
-    static constexpr int X_PATTERN_RADIUS_PIXELS = 150;  // Pixel radius for 5-touch X pattern (center to corner distance)
+    static constexpr int X_PATTERN_RADIUS_PIXELS = 125;  // Pixel radius for 5-touch X pattern (center to corner distance)
 
 public:
     // ========== Constructor & Initialization ==========
@@ -209,8 +214,13 @@ private:
     void drawTouchPointIndicatorAtOverlayPos(HDC hdc, int overlayX, int overlayY, COLORREF color);
     void drawTouchPointIndicator(HDC hdc, LONG screenX, LONG screenY, COLORREF color);
     void drawLockedPointer(HDC hdc, int centerX, int centerY, double stickX, double stickY, COLORREF color, int alpha);
-    void draw5TouchXPattern(HDC hdc, int centerX, int centerY, double centerStickX, double centerStickY, COLORREF color, int alpha);
+    void drawPalmTouchPattern(HDC hdc, int centerX, int centerY, double centerStickX, double centerStickY, COLORREF color, int alpha);
+    void drawAllTouches(HDC hdc, int centerX, int centerY);
     void drawDebugText(HDC hdc, RECT rect);
+    
+    // Helper functions for overlay rendering
+    void convertStickToOverlayCoords(double stickX, double stickY, int centerX, int centerY, int& overlayX, int& overlayY);
+    void drawTouchCircleWithId(HDC hdc, int overlayX, int overlayY, int touchId, COLORREF color, int radius = OVERLAY_LOCKED_INDICATOR_RADIUS);
     
     // ========== Utility Functions ==========
     double calculateAngle(double x, double y);
@@ -239,8 +249,9 @@ private:
     void getTouchCoordinates(double stickX, double stickY, LONG& touchX, LONG& touchY);
     void pixelToHimetric(LONG pixelX, LONG pixelY, LONG& himetricX, LONG& himetricY);
     InjectedInputTouchInfo createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp);
+    InjectedInputTouchInfo createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp, int contactRadius);
     void sendMultipleTouches(const std::vector<InjectedInputTouchInfo>& touches);
-    void send5TouchXPattern(double centerX, double centerY, bool isDown, bool isUp);
+    void sendPalmTouch(double centerX, double centerY, int centerTouchId, int cornerStartId, bool isDown, bool isUp);
     void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp);
     void sendBothTouchesIfActive(double leftX, double leftY, double rightX, double rightY,
                                  double leftLockedX, double leftLockedY, bool leftLocked,

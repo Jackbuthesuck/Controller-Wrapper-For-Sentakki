@@ -216,14 +216,9 @@ void ControllerMapper::getTouchCoordinates(double stickX, double stickY, LONG& t
     
     // X coordinate transformation
     if (primaryIsRight && currentIsPrimary) {
-        // Primary RIGHT, on primary
-        if (isDiagonal) {
-            // Diagonal RIGHT: use formula (center of secondary + horizontal offset)
-            touchX = (secondaryMonitorInfo->width / 2) + horizontalOffset;
-        } else {
-            // Purely horizontal RIGHT: use offset approach
-            touchX = relativeX + currentInfo->width;
-        }
+        // Primary RIGHT, on primary: use offset approach
+        // Send coordinate past current monitor (relativeX + width) that InputInjector will route back
+        touchX = relativeX + currentInfo->width;
     } else if (primaryIsRight && !currentIsPrimary) {
         // Primary RIGHT, on secondary: use mappedX (InputInjector routes back to current)
         touchX = mappedX;
@@ -319,6 +314,10 @@ void ControllerMapper::pixelToHimetric(LONG pixelX, LONG pixelY, LONG& himetricX
 }
 
 InjectedInputTouchInfo ControllerMapper::createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
+    return createTouchInfo(touchId, stickX, stickY, isDown, isUp, 15); // Default 30x30px (15px radius)
+}
+
+InjectedInputTouchInfo ControllerMapper::createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp, int contactRadius) {
     InjectedInputTouchInfo touchInfo{};
     
     // Get screen coordinates (in pixels)
@@ -361,12 +360,12 @@ InjectedInputTouchInfo ControllerMapper::createTouchInfo(int touchId, double sti
         InjectedInputTouchParameters::Contact
     );
     
-    // Set contact area (30x30 pixels - finger-sized)
+    // Set contact area (contactRadius pixels on each side from center)
     InjectedInputRectangle contactArea{};
-    contactArea.Left = 15;
-    contactArea.Top = 15;
-    contactArea.Bottom = 15;
-    contactArea.Right = 15;
+    contactArea.Left = contactRadius;
+    contactArea.Top = contactRadius;
+    contactArea.Bottom = contactRadius;
+    contactArea.Right = contactRadius;
     touchInfo.Contact(contactArea);
     
     return touchInfo;
@@ -380,8 +379,8 @@ void ControllerMapper::sendMultipleTouches(const std::vector<InjectedInputTouchI
     } catch (hresult_error const& ex) {
         static int errorCount = 0;
         if (errorCount < 3) {
-            std::wcout << L"Touch injection failed: " << ex.message().c_str() << std::endl;
-            std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+            std::wcout << L"[Touch] Failed: " << ex.message().c_str() << std::endl;
+            std::cout << "Error: 0x" << std::hex << ex.code() << std::dec << std::endl;
             errorCount++;
             if (errorCount >= 3) {
                 std::cout << "(Further errors suppressed)" << std::endl;
@@ -390,83 +389,115 @@ void ControllerMapper::sendMultipleTouches(const std::vector<InjectedInputTouchI
     }
 }
 
-void ControllerMapper::send5TouchXPattern(double centerX, double centerY, bool isDown, bool isUp) {
+void ControllerMapper::sendPalmTouch(double centerX, double centerY, int centerTouchId, int cornerStartId, bool isDown, bool isUp) {
     if (!inputInjectorInitialized || !inputInjector) return;
     
     // Get center screen coordinates
     LONG centerScreenX, centerScreenY;
     getTouchCoordinates(centerX, centerY, centerScreenX, centerScreenY);
     
-    // Calculate offsets for X pattern at 45-degree angles
-    // Using screen coordinates directly
-    // For X pattern: center + offsets at 45, 135, 225, 315 degrees
-    const int radius = X_PATTERN_RADIUS_PIXELS;  // 150 pixels
-    
-    // Calculate offsets using trigonometry
-    // cos(45°) = sin(45°) = sqrt(2)/2 ≈ 0.707
-    const double offsetFactor = radius * 0.7071067811865476;  // radius * sqrt(2)/2
-    
-    // Create 5 touch points in X pattern:
-    // Touch 2: Center
-    // Touch 3: Top-left (225° or -135°)
-    // Touch 4: Top-right (135° or -45°)
-    // Touch 5: Bottom-left (315° or -45°)
-    // Touch 6: Bottom-right (45°)
+    // Calculate offsets for 9-touch pattern (center + 8 around at 45° intervals)
+    const int radius = X_PATTERN_RADIUS_PIXELS;
     
     std::vector<InjectedInputTouchInfo> touches;
     
-    // Convert pixel radius to stick coordinate offsets
-    // The overlayStickRadius determines the scale
-    double offsetStickX = (offsetFactor / overlayStickRadius);
-    double offsetStickY = (offsetFactor / overlayStickRadius);
+    // Convert pixel radius to stick coordinate offsets (use double division to avoid integer division)
+    double offsetStick = ((double)radius / (double)overlayStickRadius);
     
-    // Touch 2: Center
-    touches.push_back(createTouchInfo(2, centerX, centerY, isDown, isUp));
+    // Create center touch
+    touches.push_back(createTouchInfo(centerTouchId, centerX, centerY, isDown, isUp));
     
-    // Touch 3: Top-left (225°: x = -offset, y = -offset) - but Y is inverted in stick coords
-    // In screen coords: top-left is negative X, negative Y (from center)
-    // In stick coords: Y is inverted, so positive stick Y = negative screen Y
-    // So for top-left screen: stickX = centerX - offset, stickY = centerY + offset (inverted)
-    touches.push_back(createTouchInfo(3, centerX - offsetStickX, centerY + offsetStickY, isDown, isUp));
+    // Create 8 touches around the center at 0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°
+    const double angles[8] = {0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0};
+    const double angleRad[8] = {0.0, PI/4, PI/2, 3*PI/4, PI, 5*PI/4, 3*PI/2, 7*PI/4};
     
-    // Touch 4: Top-right (135°: x = +offset, y = -offset)
-    // In stick coords: stickX = centerX + offset, stickY = centerY + offset (inverted)
-    touches.push_back(createTouchInfo(4, centerX + offsetStickX, centerY + offsetStickY, isDown, isUp));
+    for (int i = 0; i < 8; i++) {
+        double offsetX = offsetStick * std::cos(angleRad[i]);
+        double offsetY = offsetStick * std::sin(angleRad[i]);
+        double cornerX = centerX + offsetX;
+        double cornerY = centerY + offsetY;
+        touches.push_back(createTouchInfo(cornerStartId + i, cornerX, cornerY, isDown, isUp));
+    }
     
-    // Touch 5: Bottom-left (315°: x = -offset, y = +offset)
-    // In stick coords: stickX = centerX - offset, stickY = centerY - offset (inverted)
-    touches.push_back(createTouchInfo(5, centerX - offsetStickX, centerY - offsetStickY, isDown, isUp));
+    // Update touch tracking for overlay (center + 8 touches = 9 total)
+    // Helper lambda to update touch position
+    auto updateTouchPosition = [&](int touchId, double x, double y) {
+        if (touchId >= 0 && touchId < 20) {
+            if (isDown) {
+                touchActive[touchId] = true;
+                touchX[touchId] = x;
+                touchY[touchId] = y;
+            } else if (isUp) {
+                touchActive[touchId] = false;
+            } else {
+                touchX[touchId] = x;
+                touchY[touchId] = y;
+            }
+        }
+    };
     
-    // Touch 6: Bottom-right (45°: x = +offset, y = +offset)
-    // In stick coords: stickX = centerX + offset, stickY = centerY - offset (inverted)
-    touches.push_back(createTouchInfo(6, centerX + offsetStickX, centerY - offsetStickY, isDown, isUp));
+    updateTouchPosition(centerTouchId, centerX, centerY);
+    
+    for (int i = 0; i < 8; i++) {
+        int touchId = cornerStartId + i;
+        double offsetX = offsetStick * std::cos(angleRad[i]);
+        double offsetY = offsetStick * std::sin(angleRad[i]);
+        double cornerX = centerX + offsetX;
+        double cornerY = centerY + offsetY;
+        updateTouchPosition(touchId, cornerX, cornerY);
+    }
     
     try {
-        inputInjector.InjectTouchInput(touches);
-        
         if (isDown) {
-            static bool firstSuccess = true;
-            if (firstSuccess) {
-                std::cout << "L3 5-touch X pattern active! 5 touches at (" 
-                         << centerScreenX << ", " << centerScreenY << ") with 150px radius" << std::endl;
-                firstSuccess = false;
+            // On DOWN: Send individually with small delay to ensure registration
+            // Send center first, then around touches
+            for (size_t i = 0; i < touches.size(); i++) {
+                std::vector<InjectedInputTouchInfo> singleTouch;
+                singleTouch.push_back(touches[i]);
+                inputInjector.InjectTouchInput(singleTouch);
+                if (i < touches.size() - 1) { // Don't sleep after last touch
+                    Sleep(0); // Small delay to ensure each touch is registered
+                }
             }
+        } else if (isUp) {
+            // On UP: Send individually to ensure all are released
+            for (const auto& touch : touches) {
+                std::vector<InjectedInputTouchInfo> singleTouch;
+                singleTouch.push_back(touch);
+                inputInjector.InjectTouchInput(singleTouch);
+                Sleep(0); // Small delay
+            }
+        } else {
+            // On UPDATE: Send all together to maintain held state efficiently
+            inputInjector.InjectTouchInput(touches);
         }
     } catch (hresult_error const& ex) {
         static int errorCount = 0;
         if (errorCount < 3) {
-            std::wcout << L"5-touch X pattern injection failed: " << ex.message().c_str() << std::endl;
-            std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+            std::wcout << L"[L3/R3] Injection failed: " << ex.message().c_str() << std::endl;
+            std::cout << "Error: 0x" << std::hex << ex.code() << std::dec << std::endl;
             errorCount++;
-            if (errorCount >= 3) {
-                std::cout << "(Further errors suppressed)" << std::endl;
-            }
+            if (errorCount >= 3) std::cout << "[L3/R3] (Further errors suppressed)" << std::endl;
         }
     }
 }
 
 void ControllerMapper::sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
     if (!inputInjectorInitialized || !inputInjector) return;
+    
+    // Update touch tracking for overlay
+    if (touchId >= 0 && touchId < 20) {
+        if (isDown) {
+            touchActive[touchId] = true;
+            touchX[touchId] = stickX;
+            touchY[touchId] = stickY;
+        } else if (isUp) {
+            touchActive[touchId] = false;
+        } else {
+            touchX[touchId] = stickX;
+            touchY[touchId] = stickY;
+        }
+    }
     
     // Use the helper function to create touch info
     InjectedInputTouchInfo touchInfo = createTouchInfo(touchId, stickX, stickY, isDown, isUp);
@@ -484,28 +515,15 @@ void ControllerMapper::sendTouch(int touchId, double stickX, double stickY, bool
         
         static bool firstSuccess = true;
         if (firstSuccess && isDown) {
-            std::cout << "UWP Touch injection working! Touch " << touchId << " at (" << touchX << ", " << touchY << ")" << std::endl;
-            std::cout << "Multi-touch enabled with 2 independent touch points!" << std::endl;
-            std::cout << "\nIMPORTANT: Position the overlay circle over your game window!" << std::endl;
-            std::cout << "Touches are sent to the center of the overlay circle." << std::endl;
+            std::cout << "[Touch] Enabled: Touch " << touchId << " at (" << touchX << "," << touchY << ")" << std::endl;
             firstSuccess = false;
-        }
-        
-        // Debug: Print every 5th touch to show it's working
-        static int touchCount = 0;
-        if (isDown || isUp) {
-            touchCount++;
-            if (touchCount % 5 == 0) {
-                std::cout << "Touch " << touchId << (isDown ? " DOWN" : (isUp ? " UP" : " MOVE")) 
-                         << " at screen (" << touchX << ", " << touchY << ")" << std::endl;
-            }
         }
         
     } catch (hresult_error const& ex) {
         static int errorCount = 0;
         if (errorCount < 3) {
-            std::wcout << L"Touch injection failed: " << ex.message().c_str() << std::endl;
-            std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+            std::wcout << L"[Touch] Failed: " << ex.message().c_str() << std::endl;
+            std::cout << "Error: 0x" << std::hex << ex.code() << std::dec << std::endl;
             errorCount++;
             if (errorCount >= 3) {
                 std::cout << "(Further errors suppressed)" << std::endl;
@@ -521,17 +539,29 @@ void ControllerMapper::sendBothTouchesIfActive(double leftX, double leftY, doubl
     if (!leftTouchActive || !rightTouchActive) return;
     if (!inputInjectorInitialized || !inputInjector) return;
     
+    // Calculate final send positions (locked or unlocked)
+    double leftSendX = leftLocked ? leftLockedX : leftX;
+    double leftSendY = leftLocked ? leftLockedY : leftY;
+    double rightSendX = rightLocked ? rightLockedX : rightX;
+    double rightSendY = rightLocked ? rightLockedY : rightY;
+    
+    // Update touch tracking for overlay (same as sendTouch does)
+    if (0 >= 0 && 0 < 20) {
+        touchX[0] = leftSendX;
+        touchY[0] = leftSendY;
+    }
+    if (1 >= 0 && 1 < 20) {
+        touchX[1] = rightSendX;
+        touchY[1] = rightSendY;
+    }
+    
     try {
         std::vector<InjectedInputTouchInfo> touchData;
         
         // Add left touch
-        double leftSendX = leftLocked ? leftLockedX : leftX;
-        double leftSendY = leftLocked ? leftLockedY : leftY;
         touchData.push_back(createTouchInfo(0, leftSendX, leftSendY, false, false));
         
         // Add right touch
-        double rightSendX = rightLocked ? rightLockedX : rightX;
-        double rightSendY = rightLocked ? rightLockedY : rightY;
         touchData.push_back(createTouchInfo(1, rightSendX, rightSendY, false, false));
         
         // Send both touches together
@@ -539,8 +569,8 @@ void ControllerMapper::sendBothTouchesIfActive(double leftX, double leftY, doubl
     } catch (hresult_error const& ex) {
         static int errorCount = 0;
         if (errorCount < 3) {
-            std::wcout << L"Multi-touch injection failed: " << ex.message().c_str() << std::endl;
-            std::cout << "Error code: 0x" << std::hex << ex.code() << std::dec << std::endl;
+            std::wcout << L"[Touch] Multi-touch failed: " << ex.message().c_str() << std::endl;
+            std::cout << "Error: 0x" << std::hex << ex.code() << std::dec << std::endl;
             errorCount++;
             if (errorCount >= 3) {
                 std::cout << "(Further errors suppressed)" << std::endl;
@@ -678,59 +708,60 @@ void ControllerMapper::handleTouchControl(bool l1, bool r1, bool l2, bool r2, bo
         }
     }
     
-    // Handle L1 - touch ID 0
-    if (l1Pressed && !leftTouchActive) {
-        leftTouchActive = true;
-        sendTouch(0, leftX, leftY, true, false); // Touch down - only send once on press
-    } else if (leftTouchActive && l1) {
-        // Use helper function to handle movement updates with locking logic
-        handleTouchMovementUpdate(0, leftTouchActive, l1, l2,
-                                 currentLHeldDirection, leftPointerLocked, leftLockedDirection,
-                                 leftX, leftY, lAngle, lDirection,
-                                 rightTouchActive); // Skip if right is also active
+    // Handle L1 - touch ID 0 (disabled when L3 is active)
+    if (!l3TouchActive) {
+        if (l1Pressed && !leftTouchActive) {
+            leftTouchActive = true;
+            sendTouch(0, leftX, leftY, true, false); // Touch down - only send once on press
+        } else if (leftTouchActive && l1) {
+            // Use helper function to handle movement updates with locking logic
+            handleTouchMovementUpdate(0, leftTouchActive, l1, l2,
+                                     currentLHeldDirection, leftPointerLocked, leftLockedDirection,
+                                     leftX, leftY, lAngle, lDirection,
+                                     rightTouchActive); // Skip if right is also active
+        }
+        
+        if (l1Released && leftTouchActive) {
+            sendTouch(0, leftX, leftY, false, true); // Touch up
+            leftTouchActive = false;
+        }
+        
+        // Handle L2 movement while held
+        if (leftTouchActive && l2) {
+            // Use helper function to handle movement updates with locking logic
+            handleTouchMovementUpdate(0, leftTouchActive, l1 || l2, l2,
+                                     currentLHeldDirection, leftPointerLocked, leftLockedDirection,
+                                     leftX, leftY, lAngle, lDirection,
+                                     rightTouchActive); // Skip if right is also active
+        }
     }
     
-    if (l1Released && leftTouchActive) {
-        sendTouch(0, leftX, leftY, false, true); // Touch up
-        leftTouchActive = false;
-        std::cout << "L1 released: Sending Touch 0 UP" << std::endl;
-    }
-    
-    // Handle L2 movement while held
-    if (leftTouchActive && l2) {
-        // Use helper function to handle movement updates with locking logic
-        handleTouchMovementUpdate(0, leftTouchActive, l1 || l2, l2,
-                                 currentLHeldDirection, leftPointerLocked, leftLockedDirection,
-                                 leftX, leftY, lAngle, lDirection,
-                                 rightTouchActive); // Skip if right is also active
-    }
-    
-    // Handle R1 - touch ID 1
-    if (r1Pressed && !rightTouchActive) {
-        rightTouchActive = true;
-        sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
-        std::cout << "R1 pressed: Sending Touch 1 DOWN" << std::endl;
-    } else if (rightTouchActive && r1) {
-        // Use helper function to handle movement updates with locking logic
-        handleTouchMovementUpdate(1, rightTouchActive, r1, r2,
-                                 currentRHeldDirection, rightPointerLocked, rightLockedDirection,
-                                 rightX, rightY, rAngle, rDirection,
-                                 leftTouchActive); // Skip if left is also active
-    }
-    
-    if (r1Released && rightTouchActive) {
-        sendTouch(1, rightX, rightY, false, true); // Touch up
-        rightTouchActive = false;
-        std::cout << "R1 released: Sending Touch 1 UP" << std::endl;
-    }
-    
-    // Handle R2 movement while held
-    if (rightTouchActive && r2) {
-        // Use helper function to handle movement updates with locking logic
-        handleTouchMovementUpdate(1, rightTouchActive, r1 || r2, r2,
-                                 currentRHeldDirection, rightPointerLocked, rightLockedDirection,
-                                 rightX, rightY, rAngle, rDirection,
-                                 leftTouchActive); // Skip if left is also active
+    // Handle R1 - touch ID 1 (disabled when R3 is active)
+    if (!r3TouchActive) {
+        if (r1Pressed && !rightTouchActive) {
+            rightTouchActive = true;
+            sendTouch(1, rightX, rightY, true, false); // Touch down - only send once on press
+        } else if (rightTouchActive && r1) {
+            // Use helper function to handle movement updates with locking logic
+            handleTouchMovementUpdate(1, rightTouchActive, r1, r2,
+                                     currentRHeldDirection, rightPointerLocked, rightLockedDirection,
+                                     rightX, rightY, rAngle, rDirection,
+                                     leftTouchActive); // Skip if left is also active
+        }
+        
+        if (r1Released && rightTouchActive) {
+            sendTouch(1, rightX, rightY, false, true); // Touch up
+            rightTouchActive = false;
+        }
+        
+        // Handle R2 movement while held
+        if (rightTouchActive && r2) {
+            // Use helper function to handle movement updates with locking logic
+            handleTouchMovementUpdate(1, rightTouchActive, r1 || r2, r2,
+                                     currentRHeldDirection, rightPointerLocked, rightLockedDirection,
+                                     rightX, rightY, rAngle, rDirection,
+                                     leftTouchActive); // Skip if left is also active
+        }
     }
     
     // Send both touches together if both are active (for true multi-touch support)
@@ -760,34 +791,68 @@ void ControllerMapper::handleTouchControl(bool l1, bool r1, bool l2, bool r2, bo
                                 rightSendX, rightSendY, rightPointerLocked);
     }
     
-    // Handle L3 - 5-touch X pattern (like L1 but with 5 touches)
+    // Handle L3 - 9-touch pattern: center=0, around=2-9 (8 touches)
+    // Lock out L1/L2 when L3 is active to prevent conflicts
     if (l3Pressed && !l3TouchActive) {
         l3TouchActive = true;
-        send5TouchXPattern(leftX, leftY, true, false); // Touch down for all 5 touches
-    } else if (l3TouchActive && l3) {
-        // Update 5-touch pattern position while held
-        send5TouchXPattern(leftX, leftY, false, false); // Touch move for all 5 touches
+        // Release L1/L2 if they're active (L3 takes priority)
+        if (leftTouchActive) {
+            sendTouch(0, leftX, leftY, false, true); // Touch up for L1/L2
+            leftTouchActive = false;
+            leftPointerLocked = false;
+            leftLockedDirection = -1;
+            currentLHeldDirection = -1;
+        }
+        sendPalmTouch(leftX, leftY, 0, 2, true, false); // Use touch 0 for center, 2-9 for around
+    }
+    
+    // Send updates every frame while L3 is held
+    if (l3TouchActive && l3) {
+        sendPalmTouch(leftX, leftY, 0, 2, false, false);
     }
     
     if (l3Released && l3TouchActive) {
-        send5TouchXPattern(leftX, leftY, false, true); // Touch up for all 5 touches
+        sendPalmTouch(leftX, leftY, 0, 2, false, true);
         l3TouchActive = false;
-        std::cout << "L3 released: Sending 5-touch X pattern UP" << std::endl;
     }
     
-    // Handle R3 - 5-touch X pattern (like R1 but with 5 touches)
+    // Disable L1/L2 when L3 is active
+    if (l3TouchActive) {
+        // L1/L2 are locked out when L3 is active
+    } else {
+        // Normal L1/L2 handling (already done above)
+    }
+    
+    // Handle R3 - 9-touch pattern: center=1, around=10-17 (8 touches)
+    // Lock out R1/R2 when R3 is active to prevent conflicts
     if (r3Pressed && !r3TouchActive) {
         r3TouchActive = true;
-        send5TouchXPattern(rightX, rightY, true, false); // Touch down for all 5 touches
-    } else if (r3TouchActive && r3) {
-        // Update 5-touch pattern position while held
-        send5TouchXPattern(rightX, rightY, false, false); // Touch move for all 5 touches
+        // Release R1/R2 if they're active (R3 takes priority)
+        if (rightTouchActive) {
+            sendTouch(1, rightX, rightY, false, true); // Touch up for R1/R2
+            rightTouchActive = false;
+            rightPointerLocked = false;
+            rightLockedDirection = -1;
+            currentRHeldDirection = -1;
+        }
+        sendPalmTouch(rightX, rightY, 1, 10, true, false); // Use touch 1 for center, 10-17 for around
+    }
+    
+    // Send updates every frame while R3 is held
+    if (r3TouchActive && r3) {
+        sendPalmTouch(rightX, rightY, 1, 10, false, false);
     }
     
     if (r3Released && r3TouchActive) {
-        send5TouchXPattern(rightX, rightY, false, true); // Touch up for all 5 touches
+        sendPalmTouch(rightX, rightY, 1, 10, false, true);
         r3TouchActive = false;
-        std::cout << "R3 released: Sending 5-touch X pattern UP" << std::endl;
+    }
+    
+    // Disable R1/R2 when R3 is active
+    if (r3TouchActive) {
+        // R1/R2 are locked out when R3 is active
+    } else {
+        // Normal R1/R2 handling (already done above)
     }
     
     // Update previous button states

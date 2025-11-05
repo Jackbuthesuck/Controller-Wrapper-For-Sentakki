@@ -30,6 +30,9 @@ ControllerMapper::ControllerMapper(InputMode mode) : di(nullptr), joystick(nullp
                     prevL2(false), prevR2(false),
                     prevL3(false), prevR3(false),
                     l3TouchActive(false), r3TouchActive(false),
+                    touchActive{false, false, false, false, false, false, false, false, false, false},
+                    touchX{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+                    touchY{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
                     mouseButtonPressed(false), alternateFrame(false), currentLeftKey(""), currentRightKey(""),
                     debugText(""), showDebugInfo(true), lastMousePos({-1, -1}) {
     // Don't initialize controllers or create GUI in constructor
@@ -777,10 +780,13 @@ void ControllerMapper::drawOverlay(HDC hdc) {
     
     // Draw L3/R3 5-touch X pattern (only when L3/R3 is active)
     // L3 pattern (darker blue-green) - draw below locked pointer
-    draw5TouchXPattern(hdc, centerX, centerY, overlayL3CenterX, overlayL3CenterY, RGB(50, 200, 150), overlayL3Alpha);
+    drawPalmTouchPattern(hdc, centerX, centerY, overlayL3CenterX, overlayL3CenterY, RGB(50, 200, 150), overlayL3Alpha);
     
     // R3 pattern (darker pink-purple) - draw below locked pointer
-    draw5TouchXPattern(hdc, centerX, centerY, overlayR3CenterX, overlayR3CenterY, RGB(200, 50, 150), overlayR3Alpha);
+    drawPalmTouchPattern(hdc, centerX, centerY, overlayR3CenterX, overlayR3CenterY, RGB(200, 50, 150), overlayR3Alpha);
+    
+    // Draw all 10 touches (0-9) for debug overlay
+    drawAllTouches(hdc, centerX, centerY);
     
     // Draw debug text on the middle left (if enabled)
     if (showDebugInfo && !debugText.empty()) {
@@ -1015,60 +1021,175 @@ void ControllerMapper::drawLockedPointer(HDC hdc, int centerX, int centerY, doub
     DeleteObject(solidBrush);
 }
 
-void ControllerMapper::draw5TouchXPattern(HDC hdc, int centerX, int centerY, double centerStickX, double centerStickY, COLORREF color, int alpha) {
+void ControllerMapper::drawPalmTouchPattern(HDC hdc, int centerX, int centerY, double centerStickX, double centerStickY, COLORREF color, int alpha) {
     if (alpha == 0) return; // Don't draw if invisible
     
-    // Calculate the 5 positions in an X pattern
-    // 150 pixels radius converted to stick coordinate space
-    const int radiusPixels = X_PATTERN_RADIUS_PIXELS;  // 150 pixels
-    const double offsetFactor = radiusPixels * 0.7071067811865476; // radius * sqrt(2)/2 for 45-degree offset
-    double offsetStickX = (offsetFactor / overlayStickRadius);
-    double offsetStickY = (offsetFactor / overlayStickRadius);
+    // Use the actual stored touch positions from touchX/touchY arrays
+    // This matches exactly what's being sent to Windows
+    int centerTouchId = (centerStickX == overlayL3CenterX && centerStickY == overlayL3CenterY) ? 0 : 1;
+    int cornerStartId = (centerTouchId == 0) ? 2 : 10;
     
-    // Center position
-    int centerScreenX = centerX + (int)(centerStickX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    int centerScreenY = centerY - (int)(centerStickY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
+    // Draw center circle using actual stored touch position
+    if (centerTouchId >= 0 && centerTouchId < 20 && touchActive[centerTouchId]) {
+        int centerOverlayX, centerOverlayY;
+        convertStickToOverlayCoords(touchX[centerTouchId], touchY[centerTouchId], centerX, centerY, centerOverlayX, centerOverlayY);
+        drawTouchCircleWithId(hdc, centerOverlayX, centerOverlayY, centerTouchId, color);
+    }
     
-    // Create solid brush for filled circles
-    HBRUSH solidBrush = CreateSolidBrush(color);
-    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, solidBrush);
-    HPEN oldPen = (HPEN)SelectObject(hdc, GetStockObject(NULL_PEN));
+    // Draw 8 circles around the center using actual stored touch positions
+    for (int i = 0; i < 8; i++) {
+        int touchId = cornerStartId + i;
+        if (touchId >= 0 && touchId < 20 && touchActive[touchId]) {
+            int cornerOverlayX, cornerOverlayY;
+            convertStickToOverlayCoords(touchX[touchId], touchY[touchId], centerX, centerY, cornerOverlayX, cornerOverlayY);
+            drawTouchCircleWithId(hdc, cornerOverlayX, cornerOverlayY, touchId, color);
+        }
+    }
+}
+
+void ControllerMapper::drawAllTouches(HDC hdc, int centerX, int centerY) {
+    const int TOUCH_RADIUS = 8; // Small circles for each touch
+    COLORREF colors[2] = {
+        RGB(100, 150, 255),  // Touch 0: Blue
+        RGB(255, 100, 150)   // Touch 1: Pink
+    };
     
-    // Draw center circle (Touch 2)
+    // Draw touches 0-1 individually
+    for (int i = 0; i < 2; i++) {
+        if (touchActive[i]) {
+            int screenX, screenY;
+            convertStickToOverlayCoords(touchX[i], touchY[i], centerX, centerY, screenX, screenY);
+            drawTouchCircleWithId(hdc, screenX, screenY, i, colors[i], TOUCH_RADIUS);
+        }
+    }
+    
+    // Check for L3 palm touches (0 + 2-9) - center touch 0 + 8 around touches
+    bool l3PalmActive = false;
+    double l3PalmCenterX = 0.0, l3PalmCenterY = 0.0;
+    int l3PalmCount = 0;
+    
+    // Count center touch 0 (only if L3 is active, not L1/L2)
+    if (l3TouchActive && touchActive[0]) {
+        l3PalmActive = true;
+        l3PalmCenterX += touchX[0];
+        l3PalmCenterY += touchY[0];
+        l3PalmCount++;
+    }
+    
+    // Count around touches 2-9
+    for (int i = 2; i < 10; i++) {
+        if (touchActive[i]) {
+            l3PalmActive = true;
+            l3PalmCenterX += touchX[i];
+            l3PalmCenterY += touchY[i];
+            l3PalmCount++;
+        }
+    }
+    
+    // Draw L3 palm touch indicator if any L3 palm touches are active
+    if (l3PalmActive && l3PalmCount > 0) {
+        l3PalmCenterX /= l3PalmCount;
+        l3PalmCenterY /= l3PalmCount;
+        
+        // Convert stick coordinates to overlay coordinates (same as touches 0-1)
+        int overlayX = centerX + (int)(l3PalmCenterX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
+        int overlayY = centerY - (int)(l3PalmCenterY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
+        
+        const int PALM_RADIUS = 10;
+        HBRUSH brush = CreateSolidBrush(RGB(50, 200, 150)); // Blue-green for L3 palm
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
+        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+        
+        Ellipse(hdc,
+                overlayX - PALM_RADIUS, overlayY - PALM_RADIUS,
+                overlayX + PALM_RADIUS, overlayY + PALM_RADIUS);
+        
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    }
+    
+    // Check for R3 palm touches (1 + 10-17) - center touch 1 + 8 around touches
+    bool r3PalmActive = false;
+    double r3PalmCenterX = 0.0, r3PalmCenterY = 0.0;
+    int r3PalmCount = 0;
+    
+    // Count center touch 1 (only if R3 is active, not R1/R2)
+    if (r3TouchActive && touchActive[1]) {
+        r3PalmActive = true;
+        r3PalmCenterX += touchX[1];
+        r3PalmCenterY += touchY[1];
+        r3PalmCount++;
+    }
+    
+    // Count around touches 10-17
+    for (int i = 10; i < 18; i++) {
+        if (touchActive[i]) {
+            r3PalmActive = true;
+            r3PalmCenterX += touchX[i];
+            r3PalmCenterY += touchY[i];
+            r3PalmCount++;
+        }
+    }
+    
+    // Draw R3 palm touch indicator if any R3 palm touches are active
+    if (r3PalmActive && r3PalmCount > 0) {
+        r3PalmCenterX /= r3PalmCount;
+        r3PalmCenterY /= r3PalmCount;
+        
+        // Convert stick coordinates to overlay coordinates (same as touches 0-1)
+        int overlayX = centerX + (int)(r3PalmCenterX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
+        int overlayY = centerY - (int)(r3PalmCenterY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
+        
+        const int PALM_RADIUS = 10;
+        HBRUSH brush = CreateSolidBrush(RGB(200, 50, 150)); // Pink-purple for R3 palm
+        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
+        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+        
+        Ellipse(hdc,
+                overlayX - PALM_RADIUS, overlayY - PALM_RADIUS,
+                overlayX + PALM_RADIUS, overlayY + PALM_RADIUS);
+        
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(brush);
+        DeleteObject(pen);
+    }
+}
+
+// Helper function to convert stick coordinates to overlay coordinates
+void ControllerMapper::convertStickToOverlayCoords(double stickX, double stickY, int centerX, int centerY, int& overlayX, int& overlayY) {
+    overlayX = centerX + (int)(stickX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
+    overlayY = centerY - (int)(stickY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
+}
+
+// Helper function to draw a touch circle with ID number
+void ControllerMapper::drawTouchCircleWithId(HDC hdc, int overlayX, int overlayY, int touchId, COLORREF color, int radius) {
+    HBRUSH brush = CreateSolidBrush(color);
+    HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
+    HPEN oldPen = (HPEN)SelectObject(hdc, pen);
+    
     Ellipse(hdc,
-            centerScreenX - OVERLAY_LOCKED_INDICATOR_RADIUS,
-            centerScreenY - OVERLAY_LOCKED_INDICATOR_RADIUS,
-            centerScreenX + OVERLAY_LOCKED_INDICATOR_RADIUS,
-            centerScreenY + OVERLAY_LOCKED_INDICATOR_RADIUS);
+            overlayX - radius, overlayY - radius,
+            overlayX + radius, overlayY + radius);
     
-    // Draw 4 corner circles in X pattern
-    // Top-left (Touch 3): centerX - offset, centerY - offset (but Y is inverted in stick coords)
-    int tlX = centerX + (int)((centerStickX - offsetStickX) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    int tlY = centerY - (int)((centerStickY + offsetStickY) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    Ellipse(hdc, tlX - OVERLAY_LOCKED_INDICATOR_RADIUS, tlY - OVERLAY_LOCKED_INDICATOR_RADIUS,
-            tlX + OVERLAY_LOCKED_INDICATOR_RADIUS, tlY + OVERLAY_LOCKED_INDICATOR_RADIUS);
-    
-    // Top-right (Touch 4): centerX + offset, centerY - offset
-    int trX = centerX + (int)((centerStickX + offsetStickX) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    int trY = centerY - (int)((centerStickY + offsetStickY) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    Ellipse(hdc, trX - OVERLAY_LOCKED_INDICATOR_RADIUS, trY - OVERLAY_LOCKED_INDICATOR_RADIUS,
-            trX + OVERLAY_LOCKED_INDICATOR_RADIUS, trY + OVERLAY_LOCKED_INDICATOR_RADIUS);
-    
-    // Bottom-left (Touch 5): centerX - offset, centerY + offset
-    int blX = centerX + (int)((centerStickX - offsetStickX) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    int blY = centerY - (int)((centerStickY - offsetStickY) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    Ellipse(hdc, blX - OVERLAY_LOCKED_INDICATOR_RADIUS, blY - OVERLAY_LOCKED_INDICATOR_RADIUS,
-            blX + OVERLAY_LOCKED_INDICATOR_RADIUS, blY + OVERLAY_LOCKED_INDICATOR_RADIUS);
-    
-    // Bottom-right (Touch 6): centerX + offset, centerY + offset
-    int brX = centerX + (int)((centerStickX + offsetStickX) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    int brY = centerY - (int)((centerStickY - offsetStickY) * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-    Ellipse(hdc, brX - OVERLAY_LOCKED_INDICATOR_RADIUS, brY - OVERLAY_LOCKED_INDICATOR_RADIUS,
-            brX + OVERLAY_LOCKED_INDICATOR_RADIUS, brY + OVERLAY_LOCKED_INDICATOR_RADIUS);
+    // Draw touch ID number only when debug overlay is shown
+    if (showDebugInfo) {
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        char idStr[4];
+        sprintf_s(idStr, "%d", touchId);
+        TextOutA(hdc, overlayX - 5, overlayY - 8, idStr, (int)strlen(idStr));
+    }
     
     SelectObject(hdc, oldBrush);
     SelectObject(hdc, oldPen);
-    DeleteObject(solidBrush);
+    DeleteObject(brush);
+    DeleteObject(pen);
 }
 
 void ControllerMapper::drawDebugText(HDC hdc, RECT rect) {
@@ -1327,33 +1448,106 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         }
         info += "\r\n";
         
-        info += "  Touch 0 (L1 + L Stick): " + std::string(leftTouchActive ? "ACTIVE" : "---") + "\r\n";
-        if (leftTouchActive) {
-            // Get screen coordinates
-            LONG touchX, touchY;
-            getTouchCoordinates(overlayLeftX, overlayLeftY, touchX, touchY);
-            info += "    Screen: (" + std::to_string(touchX) + ", " + std::to_string(touchY) + ")\r\n";
-            // Show held direction and lock status
-            if (currentLHeldDirection >= 0) {
-                info += "    Held Dir: " + std::to_string(currentLHeldDirection) + "\r\n";
+        
+        // Show all touches (0-19) - compact format
+        info += "ALL TOUCHES STATUS:\r\n";
+        
+        // Touch 0 (L1/L2 or L3 center) - always show all lines
+        bool touch0Active = leftTouchActive || (l3TouchActive && touchActive[0]);
+        info += "  Touch 0 (L1/L2/L3): " + std::string(touch0Active ? "ACTIVE" : "---") + "\r\n";
+        LONG touchX0, touchY0;
+        if (touch0Active) {
+            // Use actual touch position if L3 is active, otherwise use L1/L2 position
+            if (l3TouchActive && touchActive[0]) {
+                getTouchCoordinates(touchX[0], touchY[0], touchX0, touchY0);
+            } else {
+                getTouchCoordinates(overlayLeftX, overlayLeftY, touchX0, touchY0);
             }
-            if (leftPointerLocked) {
-                info += "    LOCKED to: " + std::to_string(leftLockedDirection) + "\r\n";
+            info += "    Screen: (" + std::to_string(touchX0) + ", " + std::to_string(touchY0) + ")\r\n";
+        } else {
+            info += "    Screen: ---\r\n";
+        }
+        info += "    Held Dir: " + (currentLHeldDirection >= 0 ? std::to_string(currentLHeldDirection) : "---") + "\r\n";
+        info += "    LOCKED: " + (leftPointerLocked ? ("to " + std::to_string(leftLockedDirection)) : "---") + "\r\n";
+        info += "    L3 Active: " + std::string(l3TouchActive ? "YES" : "---") + "\r\n";
+        
+        // Touch 1 (R1/R2 or R3 center) - always show all lines
+        bool touch1Active = rightTouchActive || (r3TouchActive && touchActive[1]);
+        info += "  Touch 1 (R1/R2/R3): " + std::string(touch1Active ? "ACTIVE" : "---") + "\r\n";
+        LONG touchX1, touchY1;
+        if (touch1Active) {
+            // Use actual touch position if R3 is active, otherwise use R1/R2 position
+            if (r3TouchActive && touchActive[1]) {
+                getTouchCoordinates(touchX[1], touchY[1], touchX1, touchY1);
+            } else {
+                getTouchCoordinates(overlayRightX, overlayRightY, touchX1, touchY1);
+            }
+            info += "    Screen: (" + std::to_string(touchX1) + ", " + std::to_string(touchY1) + ")\r\n";
+        } else {
+            info += "    Screen: ---\r\n";
+        }
+        info += "    Held Dir: " + (currentRHeldDirection >= 0 ? std::to_string(currentRHeldDirection) : "---") + "\r\n";
+        info += "    LOCKED: " + (rightPointerLocked ? ("to " + std::to_string(rightLockedDirection)) : "---") + "\r\n";
+        info += "    R3 Active: " + std::string(r3TouchActive ? "YES" : "---") + "\r\n";
+        
+        
+        // L3 palm touches (0 + 2-9) - always show line
+        int activeL3PalmTouches = 0;
+        std::string l3PalmInfo = "  L3 palm (0+2-9): ";
+        // Count center touch 0 if L3 is active
+        if (l3TouchActive && touchActive[0]) {
+            activeL3PalmTouches++;
+            if (activeL3PalmTouches <= 5) {
+                LONG screenX, screenY;
+                getTouchCoordinates(touchX[0], touchY[0], screenX, screenY);
+                l3PalmInfo += "0(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
             }
         }
-        info += "  Touch 1 (R1 + R Stick): " + std::string(rightTouchActive ? "ACTIVE" : "---") + "\r\n";
-        if (rightTouchActive) {
-            LONG touchX, touchY;
-            getTouchCoordinates(overlayRightX, overlayRightY, touchX, touchY);
-            info += "    Screen: (" + std::to_string(touchX) + ", " + std::to_string(touchY) + ")\r\n";
-            // Show held direction and lock status
-            if (currentRHeldDirection >= 0) {
-                info += "    Held Dir: " + std::to_string(currentRHeldDirection) + "\r\n";
-            }
-            if (rightPointerLocked) {
-                info += "    LOCKED to: " + std::to_string(rightLockedDirection) + "\r\n";
+        for (int i = 2; i < 10; i++) {
+            if (touchActive[i]) {
+                activeL3PalmTouches++;
+                if (activeL3PalmTouches <= 5) {
+                    LONG screenX, screenY;
+                    getTouchCoordinates(touchX[i], touchY[i], screenX, screenY);
+                    l3PalmInfo += std::to_string(i) + "(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
+                }
             }
         }
+        if (activeL3PalmTouches > 0) {
+            l3PalmInfo += "[" + std::to_string(activeL3PalmTouches) + " total]";
+        } else {
+            l3PalmInfo += "none";
+        }
+        info += l3PalmInfo + "\r\n";
+        
+        // R3 palm touches (1 + 10-17) - always show line
+        int activeR3PalmTouches = 0;
+        std::string r3PalmInfo = "  R3 palm (1+10-17): ";
+        // Count center touch 1 if R3 is active
+        if (r3TouchActive && touchActive[1]) {
+            activeR3PalmTouches++;
+            if (activeR3PalmTouches <= 5) {
+                LONG screenX, screenY;
+                getTouchCoordinates(touchX[1], touchY[1], screenX, screenY);
+                r3PalmInfo += "1(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
+            }
+        }
+        for (int i = 10; i < 18; i++) {
+            if (touchActive[i]) {
+                activeR3PalmTouches++;
+                if (activeR3PalmTouches <= 5) {
+                    LONG screenX, screenY;
+                    getTouchCoordinates(touchX[i], touchY[i], screenX, screenY);
+                    r3PalmInfo += std::to_string(i) + "(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
+                }
+            }
+        }
+        if (activeR3PalmTouches > 0) {
+            r3PalmInfo += "[" + std::to_string(activeR3PalmTouches) + " total]";
+        } else {
+            r3PalmInfo += "none";
+        }
+        info += r3PalmInfo + "\r\n";
         info += "\r\n";
         
         // Stick positions
@@ -1381,24 +1575,6 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         }
         info += "\r\n";
         
-        
-        // Pointer locking status
-        info += "POINTER LOCKING:\r\n";
-        info += "  Left Lock: " + std::string(leftPointerLocked ? "ACTIVE" : "---") + "\r\n";
-        if (leftPointerLocked) {
-            info += "    Locked to: " + std::to_string(leftLockedDirection) + "\r\n";
-        }
-        if (currentLHeldDirection >= 0) {
-            info += "    Captured: " + std::to_string(currentLHeldDirection) + "\r\n";
-        }
-        info += "  Right Lock: " + std::string(rightPointerLocked ? "ACTIVE" : "---") + "\r\n";
-        if (rightPointerLocked) {
-            info += "    Locked to: " + std::to_string(rightLockedDirection) + "\r\n";
-        }
-        if (currentRHeldDirection >= 0) {
-            info += "    Captured: " + std::to_string(currentRHeldDirection) + "\r\n";
-        }
-        info += "\r\n";
     } else if (currentMode == InputMode::Mouse) {
         info += "MOUSE CONTROL:\r\n";
         bool leftPressed = prevL1;
@@ -1489,7 +1665,7 @@ void ControllerMapper::run() {
     // Keep console visible throughout the process
     
     // Clear keyboard state completely to prevent restart flag persistence
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 20; i++) {
         GetAsyncKeyState(VK_CONTROL);
         GetAsyncKeyState(VK_SHIFT);
         GetAsyncKeyState(VK_MENU);
