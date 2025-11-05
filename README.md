@@ -1,19 +1,18 @@
 # Controller Input Mapper
 
-A C++ controller input mapper with three modes: Touch, Mouse, and Keyboard. Works with any XInput (current version had'nt been tested) or DirectInput controller.
+A C++ controller input mapper with three modes: Touch, Mouse, and Keyboard. Works with any DirectInput controller and maybe XInput. But I only tested this with a DualShock 4
 
 Designed for playing Sentakki (osu! lazer mod) and anything else if controls apply.
 
-Now with multi-screen support (Why not (this took me 2 days)).
+I love maimai.
 ---
 
 
 ## Quick Start
 
 1. Run `ControllerInput.exe`
-2. Select your mode (1-3)
-3. Choose your controller
-4. Play!
+2. It's pretty stright forward actually.
+3. Try it out.
 
 **Requirements:**
 - Windows 10 or 11
@@ -30,8 +29,8 @@ Now with multi-screen support (Why not (this took me 2 days)).
 **Touch Mode (Recommended):**
 - Stick → Aim
 - L1/R1 → Touch
-- L2/R2 → Slide note path locking (Currently only support 90 degree and 45 degree streight slide, hold the trigger then treat them as if they were edge slide)
-- L3/R3 → Wide touch (for touch note and such)
+- L2/R2 → Slide Note Path Locking (Currently only support 90 degree and 45 degree streight slide, hold the trigger then treat them as if they were edge slide)
+- L3/R3 → Palm Touch (for touch note and such)
 
 **Mouse Mode (Legacy):**
 - Left Stick → Cursor position
@@ -43,7 +42,7 @@ Now with multi-screen support (Why not (this took me 2 days)).
 - RB + Right Stick → Keys 1-8 (right side)
 
 **Shortcuts:**
-- `Ctrl+Shift+~` → Toggle debug info
+- `Ctrl+Shift+~` → Toggle debug info, Will also hide the touch IDs on the overlay
 - `Ctrl+Alt+Shift+~` → Restart
 
 ---
