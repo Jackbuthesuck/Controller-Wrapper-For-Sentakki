@@ -13,6 +13,7 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <cstring>
 #include <conio.h>
 #include <atomic>
 #include <mutex>
@@ -49,6 +50,18 @@ enum class InputMode {
     Camera      // External camera-based input (via UDP)
 };
 
+enum class CameraInputMode {
+    Push,
+    Curl,
+    DS4Led
+};
+
+enum class ControllerSourceMode {
+    One,
+    None,
+    All
+};
+
 struct ControllerInfo {
     ControllerType type;
     std::string name;
@@ -75,6 +88,8 @@ private:
     bool hasXInputController;
     DWORD xInputControllerIndex;
     XINPUT_STATE xInputState;
+    bool aggregateControllerButtons;
+    std::vector<LPDIRECTINPUTDEVICE8> aggregateJoysticks;
     
     // ========== Overlay Visualization ==========
     double overlayLeftX, overlayLeftY;      // Left stick (-1.0 to 1.0)
@@ -119,6 +134,9 @@ private:
     
     // ========== Input Mode State ==========
     InputMode currentMode;  // Current operating mode (Touch/Mouse/Keyboard)
+    CameraInputMode cameraInputMode;
+    ControllerSourceMode controllerSourceMode;
+    int cameraIndex;
     
     // Touch mode state (UWP InputInjector)
     bool leftTouchActive;
@@ -196,7 +214,7 @@ private:
 
 public:
     // ========== Constructor & Initialization ==========
-    ControllerMapper(InputMode mode = InputMode::Touch);
+    ControllerMapper(InputMode mode = InputMode::Touch, CameraInputMode cameraMode = CameraInputMode::Push, int cameraDeviceIndex = 0, ControllerSourceMode controllerSource = ControllerSourceMode::One);
     bool initialize();
     ~ControllerMapper();
     
@@ -309,10 +327,11 @@ private:
     // External normalized coordinates [0..1]
     double externalLeftX{0.0}, externalLeftY{0.0}, externalRightX{0.0}, externalRightY{0.0};
     bool externalLeftPressed{false}, externalRightPressed{false};
+    bool externalUsesControllerButtons{false};
     bool useExternalInput{false};
     ULONGLONG externalLastPacketMs{0};
     bool externalSmoothingInitialized{false};
-    double externalSmoothingAlpha{0.35};
+    double externalSmoothingAlpha{0.85};
     static constexpr ULONGLONG EXTERNAL_INPUT_TIMEOUT_MS = 300;
 
     // Start/stop UDP listener (port default 8765)
@@ -324,6 +343,8 @@ private:
     bool cameraSenderRunning{false};
     bool startCameraSenderProcess();
     void stopCameraSenderProcess();
+    void sendCameraDebugState(bool enabled);
+    void sendCameraCalibrationCommand();
 };
 
 #endif // CONTROLLER_INPUT_H

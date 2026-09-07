@@ -23,9 +23,11 @@ int main() {
         std::cout << std::endl;
         std::cout << "  [4] Camera Mode (Use external CV input via UDP)" << std::endl;
         std::cout << std::endl;
-        std::cout << "Select mode (1-3): ";
+        std::cout << "Select mode (1-4): ";
         
         InputMode selectedMode = InputMode::Touch; // Default
+        CameraInputMode selectedCameraMode = CameraInputMode::Push;
+        int selectedCameraIndex = -1;
         char choice = _getch();
         std::cout << choice << std::endl << std::endl;
         
@@ -42,10 +44,41 @@ int main() {
                 selectedMode = InputMode::Keyboard;
                 std::cout << "Starting in KEYBOARD mode..." << std::endl;
                 break;
-            case '4':
+            case '4': {
                 selectedMode = InputMode::Camera;
                 std::cout << "Starting in CAMERA mode..." << std::endl;
+                std::cout << "Choose camera input:" << std::endl;
+                std::cout << "  [1] Push for click" << std::endl;
+                std::cout << "  [2] Open hand for click (curl for rest)" << std::endl;
+                std::cout << "  [3] Track DS4 LED, use L1/R1 for click" << std::endl;
+                std::cout << "Select camera input (1-3): ";
+                {
+                    char cameraChoice = _getch();
+                    std::cout << cameraChoice << std::endl << std::endl;
+                    if (cameraChoice == '2') {
+                        selectedCameraMode = CameraInputMode::Curl;
+                    } else if (cameraChoice == '3') {
+                        selectedCameraMode = CameraInputMode::DS4Led;
+                    } else if (cameraChoice != '1') {
+                        std::cout << "Invalid camera input. Using push for click." << std::endl;
+                    }
+                }
+                std::cout << "Choose camera source:" << std::endl;
+                std::cout << "  [1] Webcam / camera device" << std::endl;
+                std::cout << "  [2] scrcpy USB window" << std::endl;
+                std::cout << "  [3] Entire monitor containing scrcpy" << std::endl;
+                std::cout << "Select source (1-3): ";
+                char sourceChoice = _getch();
+                std::cout << sourceChoice << std::endl << std::endl;
+                if (sourceChoice == '2') {
+                    selectedCameraIndex = -2;
+                    std::cout << "Start scrcpy first with a window title containing 'scrcpy'." << std::endl;
+                } else if (sourceChoice == '3') {
+                    selectedCameraIndex = -3;
+                    std::cout << "Maximize scrcpy on the monitor you choose; the entire monitor will be captured." << std::endl;
+                }
                 break;
+            }
             default:
                 std::cout << "Invalid choice. Please select 1, 2, or 3." << std::endl;
                 std::cout << std::endl;
@@ -54,7 +87,7 @@ int main() {
         std::cout << std::endl;
 
         try {
-            ControllerMapper app(selectedMode);
+            ControllerMapper app(selectedMode, selectedCameraMode, selectedCameraIndex);
             if (!app.initialize()) {
                 std::cerr << "[ERROR] Failed to initialize application!" << std::endl;
                 continue;

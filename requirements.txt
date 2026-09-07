@@ -1,2 +1,4 @@
 opencv-python
 mediapipe
+mss
+pywin32

@@ -41,8 +41,14 @@ I love maimai.
 
 **Camera/UDP Input:**
 - Run `camera_sender.py` to send hand positions to `127.0.0.1:8765`
-- Left/Right hand index fingertip controls Left/Right pointer
-- Gesture `index_tip.y < middle_tip.y - 0.04` maps to press state
+- Left/Right pointer uses a weighted palm anchor: wrist landmark 0, thumb landmark 2 weighted twice, index base 5, and pinky base 17
+- Push mode uses forward palm depth relative to the neutral depth captured during calibration
+- Open-hand mode uses three or more extended fingers for touch-down; a curled hand is rest
+- DS4 LED mode disables hand detection, tracks the bright lightbar, and uses physical DS4 L1/R1 for clicks
+- Hand modes: press DirectInput D-pad Right or Square (XInput D-pad Right or X), hold the peace sign with both hands, then release it
+- DS4 LED mode: press the same calibration control while both blue/green lightbars are visible; their positions immediately define the circle
+- `--push-threshold` controls normalized forward depth change; default is `0.04` (roughly 4% of the image width, not centimeters)
+- Calibration: hold both hands in a peace sign with index and middle extended and ring and pinky curled. Their weighted palm anchors define the play-space circle.
 
 **Shortcuts:**
 - `Ctrl+Shift+~` → Toggle debug info, Will also hide the touch IDs on the overlay

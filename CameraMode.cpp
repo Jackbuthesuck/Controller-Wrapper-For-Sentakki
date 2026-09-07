@@ -26,25 +26,58 @@ bool ControllerMapper::startCameraSenderProcess() {
         }
     }
 
+    const char* cameraModeArg = "push";
+    if (cameraInputMode == CameraInputMode::Curl) {
+        cameraModeArg = "open";
+    } else if (cameraInputMode == CameraInputMode::DS4Led) {
+        cameraModeArg = "ds4led";
+    }
+    const std::string modeArg = std::string(" --input-mode ") + cameraModeArg;
+    const std::string cameraArg = cameraIndex == -3
+        ? " --scrcpy-screen -1"
+        : cameraIndex == -2
+        ? " --scrcpy-window scrcpy"
+        : " --camera-index -1";
+    const std::string statusArg = " --status-port 8767";
+
     // Candidate launch commands, in order.
     std::vector<std::string> candidates;
 
     char pyEnv[512] = {};
     DWORD pyLen = GetEnvironmentVariableA("PYTHON_EXE", pyEnv, sizeof(pyEnv));
     if (pyLen > 0 && pyLen < sizeof(pyEnv)) {
-        candidates.push_back(std::string("\"") + pyEnv + "\" \"" + scriptPath + "\" --preview --auto-download-model");
+        candidates.push_back(std::string("\"") + pyEnv + "\" \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + statusArg);
     }
 
     char foundPython[MAX_PATH] = {};
     if (SearchPathA(nullptr, "python.exe", nullptr, MAX_PATH, foundPython, nullptr) > 0) {
-        candidates.push_back(std::string("\"") + foundPython + "\" \"" + scriptPath + "\" --preview --auto-download-model");
+        candidates.push_back(std::string("\"") + foundPython + "\" \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + statusArg);
     }
 
     if (SearchPathA(nullptr, "py.exe", nullptr, MAX_PATH, foundPython, nullptr) > 0) {
-        candidates.push_back(std::string("\"") + foundPython + "\" -3 \"" + scriptPath + "\" --preview --auto-download-model");
+        candidates.push_back(std::string("\"") + foundPython + "\" -3 \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + statusArg);
     }
 
-    candidates.push_back(std::string("\"C:\\Program Files\\Python310\\python.exe\" \"") + scriptPath + "\" --preview --auto-download-model");
+    char localAppData[MAX_PATH] = {};
+    DWORD localAppDataLength = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH);
+    if (localAppDataLength > 0 && localAppDataLength < MAX_PATH) {
+        candidates.push_back(std::string("\"") + localAppData + "\\Programs\\Python\\Python312\\python.exe\" \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + statusArg);
+    }
+    candidates.push_back(std::string("\"C:\\Program Files\\Python310\\python.exe\" \"") + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + statusArg);
+
+    SOCKET statusSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sockaddr_in statusAddress = {};
+    statusAddress.sin_family = AF_INET;
+    statusAddress.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    statusAddress.sin_port = htons(8767);
+    bool statusSocketReady = statusSocket != INVALID_SOCKET &&
+        bind(statusSocket, reinterpret_cast<const sockaddr*>(&statusAddress), sizeof(statusAddress)) != SOCKET_ERROR;
+    if (!statusSocketReady && statusSocket != INVALID_SOCKET) {
+        closesocket(statusSocket);
+        statusSocket = INVALID_SOCKET;
+    }
+
+    logInfo("Starting Python camera sender...");
 
     STARTUPINFOA si = {};
     si.cb = sizeof(si);
@@ -71,8 +104,32 @@ bool ControllerMapper::startCameraSenderProcess() {
             cameraSenderProcess = pi;
             cameraSenderRunning = true;
             logInfo("Auto-started camera_sender.py");
+
+            if (statusSocketReady) {
+                fd_set readSet;
+                FD_ZERO(&readSet);
+                FD_SET(statusSocket, &readSet);
+                timeval timeout = {};
+                timeout.tv_sec = 10;
+                if (select(0, &readSet, nullptr, nullptr, &timeout) > 0) {
+                    char response[64] = {};
+                    int responseLength = recv(statusSocket, response, sizeof(response) - 1, 0);
+                    if (responseLength > 0 && std::string(response, responseLength) == "PYTHON_READY") {
+                        logInfo("Python camera sender is ready.");
+                    } else {
+                        logError("Python camera sender returned an unexpected startup response.");
+                    }
+                } else {
+                    logError("Python camera sender started, but no ready response was received within 10 seconds.");
+                }
+                closesocket(statusSocket);
+            }
             return true;
         }
+    }
+
+    if (statusSocket != INVALID_SOCKET) {
+        closesocket(statusSocket);
     }
 
     return false;
@@ -98,6 +155,35 @@ void ControllerMapper::stopCameraSenderProcess() {
     }
 
     cameraSenderRunning = false;
+}
+
+void ControllerMapper::sendCameraDebugState(bool enabled) {
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) return;
+
+    sockaddr_in destination = {};
+    destination.sin_family = AF_INET;
+    destination.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    destination.sin_port = htons(8766);
+    const char* message = enabled ? "DEBUG 1" : "DEBUG 0";
+    sendto(sock, message, static_cast<int>(strlen(message)), 0,
+           reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+    closesocket(sock);
+}
+
+void ControllerMapper::sendCameraCalibrationCommand() {
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) return;
+
+    sockaddr_in destination = {};
+    destination.sin_family = AF_INET;
+    destination.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    destination.sin_port = htons(8766);
+    const char* message = "CALIBRATE";
+    sendto(sock, message, static_cast<int>(strlen(message)), 0,
+           reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
+    closesocket(sock);
+    logInfo("Calibration armed from controller.");
 }
 
 void ControllerMapper::startUDPListener(int port) {
@@ -149,10 +235,10 @@ void ControllerMapper::startUDPListener(int port) {
                 if (len > 0) {
                     buf[len] = '\0';
                     double lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0;
-                    int lp = 0, rp = 0;
-                    // Expect CSV: lx,ly,lp,rx,ry,rp
-                    int matched = sscanf_s(buf, "%lf,%lf,%d,%lf,%lf,%d", &lx, &ly, &lp, &rx, &ry, &rp);
-                    if (matched == 6) {
+                    int lp = 0, rp = 0, controllerClicks = 0;
+                    // Expect CSV: lx,ly,lp,rx,ry,rp[,controller_clicks]
+                    int matched = sscanf_s(buf, "%lf,%lf,%d,%lf,%lf,%d,%d", &lx, &ly, &lp, &rx, &ry, &rp, &controllerClicks);
+                    if (matched == 6 || matched == 7) {
                         std::lock_guard<std::mutex> lock(udpMutex);
                         // Clamp normalized values to [0..1] to keep camera input sane.
                         if (lx < 0.0) lx = 0.0; else if (lx > 1.0) lx = 1.0;
@@ -177,6 +263,7 @@ void ControllerMapper::startUDPListener(int port) {
 
                         externalLeftPressed = (lp != 0);
                         externalRightPressed = (rp != 0);
+                        externalUsesControllerButtons = (matched == 7 && controllerClicks != 0);
                         externalLastPacketMs = GetTickCount64();
                         useExternalInput = true;
                     }
