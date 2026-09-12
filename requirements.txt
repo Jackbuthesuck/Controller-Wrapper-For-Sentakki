@@ -2,3 +2,4 @@ opencv-python
 mediapipe
 mss
 pywin32
+cv2-enumerate-cameras

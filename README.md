@@ -32,23 +32,34 @@ I love maimai.
 
 **Mouse Mode (Legacy):**
 - Left Stick → Cursor position
-- LB → Left mouse button
-- RB → Right mouse button
+- L1 → Left mouse button
+- R1 → Right mouse button
 
 **Keyboard Mode (Legacy):**
-- LB + Left Stick → Keys 1-8 (left side)
-- RB + Right Stick → Keys 1-8 (right side)
+- L1 + Left Stick → Keys 1-8 (left side)
+- R1 + Right Stick → Keys 1-8 (right side)
 
 **Camera/UDP Input:**
-- Run `camera_sender.py` to send hand positions to `127.0.0.1:8765`
+- Select Camera from `ControllerInput.exe`; it automatically starts `camera_sender.py` and sends input to `127.0.0.1:8765`
+- When multiple cameras are detected, press the number beside a camera to select it immediately; names come from Windows when available, with resolution/FPS fallback details
 - Left/Right pointer uses a weighted palm anchor: wrist landmark 0, thumb landmark 2 weighted twice, index base 5, and pinky base 17
 - Push mode uses forward palm depth relative to the neutral depth captured during calibration
 - Open-hand mode uses three or more extended fingers for touch-down; a curled hand is rest
 - DS4 LED mode disables hand detection, tracks the bright lightbar, and uses physical DS4 L1/R1 for clicks
-- Hand modes: press DirectInput D-pad Right or Square (XInput D-pad Right or X), hold the peace sign with both hands, then release it
-- DS4 LED mode: press the same calibration control while both blue/green lightbars are visible; their positions immediately define the circle
+- Hand modes: show a peace sign with both hands; hold position until the circle is measured, then release to apply calibration. No controller is required
+- DS4 LED mode: press the same calibration control while both blue/red lightbars are visible; their positions immediately define the circle
 - `--push-threshold` controls normalized forward depth change; default is `0.04` (roughly 4% of the image width, not centimeters)
 - Calibration: hold both hands in a peace sign with index and middle extended and ring and pinky curled. Their weighted palm anchors define the play-space circle.
+- Calibration uses a circular play area; it is intentionally not treated as a square because DirectInput axis behavior can be unreliable near the corners.
+- Controller mapping note: D-pad Right is the only D-pad direction considered reliably mapped. Use it for calibration or menu actions where applicable.
+
+### DS4 LED Setup
+
+You need a tool such as DS4Windows to set the controller lightbar colors and brightness before starting this mode. DS4Windows is the setup method used during development; `ControllerInput.exe` does not configure the lightbar, it only reads the colors from the camera.
+
+For the most reliable LED tracking, use a dark or dim room with the DS4 lightbars as the brightest colored objects in view. Avoid direct sunlight, mirrors, glossy screens, colored lamps, and bright backgrounds behind the controller. Do not set the lightbar brightness too high: clipped blue or red light becomes overexposed and can appear white, which makes color detection less reliable. Keep the camera fixed and give the blue and red lightbars a clear separation from each other.
+
+Stand at the same distance you expect to use during play. Select `DS4 LED + L1/R1` in `ControllerInput.exe`; it starts the sender automatically. Calibrate while both lightbars are visible. The preview should show both detected markers and report capture/send rates near the requested 60 FPS. If the rates are low, reduce camera resolution or close other camera-using applications before changing detection settings.
 
 **Shortcuts:**
 - `Ctrl+Shift+~` → Toggle debug info, Will also hide the touch IDs on the overlay
@@ -67,7 +78,9 @@ I love maimai.
 build.bat
 ```
 
-## Camera Sender (Python)
+## Camera Sender (Python, Optional)
+
+The normal workflow does not require starting Python manually. `ControllerInput.exe` launches the sender when Camera mode is selected. Run it manually only for troubleshooting, standalone camera testing, or when the executable reports that it could not start the sender.
 
 Install dependencies:
 
@@ -92,8 +105,6 @@ If your `mediapipe` package is tasks-only (no `mp.solutions`), run with auto mod
 ```bash
 python camera_sender.py --preview --auto-download-model
 ```
-
-Then run `ControllerInput.exe` and select mode `4` (Camera Mode), or any mode while no controller is attached.
 
 **Manual build:**
 ```bash

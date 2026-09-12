@@ -41,7 +41,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 echo Linking...
-link /nologo main.obj ControllerMapper.obj TouchMode.obj MouseMode.obj KeyboardMode.obj CameraMode.obj dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib msimg32.lib windowsapp.lib /out:ControllerInput.exe
+link /nologo main.obj ControllerMapper.obj TouchMode.obj MouseMode.obj KeyboardMode.obj CameraMode.obj dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib msimg32.lib windowsapp.lib /MANIFEST:EMBED /MANIFESTINPUT:ControllerInput.manifest /out:ControllerInput.exe
 if %ERRORLEVEL% NEQ 0 (
     echo Linking failed.
     pause

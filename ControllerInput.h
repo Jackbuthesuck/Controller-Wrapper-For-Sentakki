@@ -331,7 +331,7 @@ private:
     bool useExternalInput{false};
     ULONGLONG externalLastPacketMs{0};
     bool externalSmoothingInitialized{false};
-    double externalSmoothingAlpha{0.85};
+    double externalSmoothingAlpha{1.0};
     static constexpr ULONGLONG EXTERNAL_INPUT_TIMEOUT_MS = 300;
 
     // Start/stop UDP listener (port default 8765)

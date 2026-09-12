@@ -421,6 +421,17 @@ void ControllerMapper::createOverlay() {
 // ========== Controller Initialization ==========
 
 void ControllerMapper::initializeControllers() {
+    // Hand camera modes are fully camera-driven, including calibration.
+    if (currentMode == InputMode::Camera && cameraInputMode != CameraInputMode::DS4Led) {
+        noControllerMode = true;
+        hasXInputController = false;
+        joystick = nullptr;
+        std::cout << "Camera mode: hand tracking and calibration do not require a controller." << std::endl;
+        detectMonitorFromCursor(true);
+        createOverlay();
+        return;
+    }
+
     // List all available controllers, then choose the source policy based on mode and count.
     std::vector<ControllerInfo> availableControllers = listAllControllers();
 
@@ -462,8 +473,9 @@ void ControllerMapper::initializeControllers() {
         std::cout << "Camera mode controller choice:" << std::endl;
         std::cout << "  [1] Use one controller" << std::endl;
         std::cout << "  [2] Run without a controller" << std::endl;
-        std::cout << "Select controller option (1-2): ";
+        std::cout << "Select controller option (1-2, ESC = no controller): ";
         char cameraControllerChoice = _getch();
+        if (cameraControllerChoice == 27) cameraControllerChoice = '2';
         std::cout << cameraControllerChoice << std::endl;
         if (cameraControllerChoice == '2') {
             noControllerMode = true;
@@ -479,8 +491,10 @@ void ControllerMapper::initializeControllers() {
     // Use the first controller by default when there is exactly one.
     int selectedIndex = 0;
     if (availableControllers.size() > 1 && currentMode != InputMode::Camera) {
-        displayControllerMenu(availableControllers);
-        selectedIndex = getControllerSelection(availableControllers.size());
+        do {
+            displayControllerMenu(availableControllers);
+            selectedIndex = getControllerSelection(availableControllers.size());
+        } while (selectedIndex < 0); // ESC redisplays the menu instead of committing a fat-fingered pick
     } else {
         std::cout << "Auto-selecting controller: " << availableControllers[0].name << std::endl;
     }
@@ -580,6 +594,9 @@ int ControllerMapper::getControllerSelection(int maxControllers) {
     while (true) {
         if (_kbhit()) {
             int key = _getch();
+            if (key == 27) {
+                return -1; // ESC: let the caller redisplay the menu
+            }
             if (key >= '1' && key <= '9') {
                 int selection = key - '1';
                 if (selection < maxControllers) {
@@ -1836,6 +1853,7 @@ void ControllerMapper::run() {
     bool prevTogglePressed = togglePressed;
     bool prevRestartPressed = restartPressed;
     bool prevCalibrationPressed = false;
+    bool prevCalibrationKeyPressed = false;
 
     MSG msg = {};
     while (true) {
@@ -1880,6 +1898,8 @@ void ControllerMapper::run() {
         
         prevTogglePressed = togglePressed;
         prevRestartPressed = restartPressed;
+
+        bool calibrationKeyPressed = (GetAsyncKeyState('C') & 0x8000) != 0;
 
         // Process controller (always, regardless of focus)
         bool controllerSuccess = false;
@@ -1987,10 +2007,13 @@ void ControllerMapper::run() {
             }
         }
 
-        if (currentMode == InputMode::Camera && calibrationPressed && !prevCalibrationPressed) {
+        if (currentMode == InputMode::Camera &&
+            ((calibrationPressed && !prevCalibrationPressed) ||
+             (calibrationKeyPressed && !prevCalibrationKeyPressed))) {
             sendCameraCalibrationCommand();
         }
         prevCalibrationPressed = calibrationPressed;
+        prevCalibrationKeyPressed = calibrationKeyPressed;
         
         // If external CV input is available, override controller values
         {
@@ -2091,8 +2114,8 @@ void ControllerMapper::run() {
             lastMousePos = cursorPos;
         }
 
-        // Sleep based on refresh rate to match monitor
-        Sleep(updateIntervalMs);
+        // Camera packets arrive independently of the monitor refresh rate.
+        Sleep(currentMode == InputMode::Camera ? 1 : updateIntervalMs);
     }
 }
 

@@ -24,11 +24,12 @@ def parse_args() -> argparse.Namespace:
         default="push",
         help="Camera input: index push, open hand, or DS4 LED tracking",
     )
-    parser.add_argument("--push-threshold", type=float, default=0.12, help="Palm-size growth required for push click")
-    parser.add_argument("--min-detect", type=float, default=0.7, help="Min detection confidence")
-    parser.add_argument("--min-track", type=float, default=0.5, help="Min tracking confidence")
+    parser.add_argument("--push-threshold", type=float, default=0.025, help="Palm depth growth required for push click")
+    parser.add_argument("--push-release-threshold", type=float, default=0.012, help="Palm depth growth required to keep a push held")
+    parser.add_argument("--min-detect", type=float, default=0.5, help="Min detection confidence")
+    parser.add_argument("--min-track", type=float, default=0.25, help="Min tracking confidence")
     parser.add_argument("--preview", action="store_true", help="Show camera preview window")
-    parser.add_argument("--fps", type=float, default=30.0, help="Target send FPS")
+    parser.add_argument("--fps", type=float, default=60.0, help="Target send FPS")
     parser.add_argument("--log", action="store_true", help="Print outgoing packet snapshots")
     parser.add_argument("--log-interval", type=float, default=0.5, help="Seconds between packet logs")
     parser.add_argument(
@@ -122,14 +123,20 @@ def _make_hand_detector(mp, args):
         min_hand_detection_confidence=args.min_detect,
         min_hand_presence_confidence=args.min_track,
         min_tracking_confidence=args.min_track,
-        running_mode=mp_vision_tasks.RunningMode.IMAGE,
+        running_mode=mp_vision_tasks.RunningMode.VIDEO,
     )
     landmarker = mp_vision_tasks.HandLandmarker.create_from_options(options)
+    last_timestamp_ms = 0
 
     def detect(rgb_frame):
+        nonlocal last_timestamp_ms
         out = []
         image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        results = landmarker.detect(image)
+        timestamp_ms = time.monotonic_ns() // 1_000_000
+        if timestamp_ms <= last_timestamp_ms:
+            timestamp_ms = last_timestamp_ms + 1
+        last_timestamp_ms = timestamp_ms
+        results = landmarker.detect_for_video(image, timestamp_ms)
         for i, hand_landmarks in enumerate(results.hand_landmarks):
             label = "Unknown"
             if i < len(results.handedness) and len(results.handedness[i]) > 0:
@@ -156,13 +163,68 @@ def _make_hand_detector(mp, args):
 
 
 def _find_cameras(cv2, maximum=10):
+    try:
+        from cv2_enumerate_cameras import enumerate_cameras
+
+        available = []
+        for camera in enumerate_cameras():
+            if 0 <= camera.index < maximum:
+                available.append({
+                    "index": camera.index,
+                    "name": camera.name or f"Camera {camera.index}",
+                })
+        if available:
+            return sorted(available, key=lambda item: item["index"])
+    except Exception:
+        pass
+
     available = []
     for camera_index in range(maximum):
         camera = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
         if camera.isOpened():
-            available.append(camera_index)
+            width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = camera.get(cv2.CAP_PROP_FPS)
+            description = f"Camera {camera_index}"
+            if width > 0 and height > 0:
+                description += f" ({width}x{height}"
+                if fps > 0:
+                    description += f" @ {fps:.0f} FPS"
+                description += ")"
+            available.append({"index": camera_index, "name": description})
         camera.release()
     return available
+
+
+def _camera_choice_key(position, total):
+    """Use one key per choice; 0 selects the tenth entry when needed."""
+    if total <= 9:
+        return str(position + 1)
+    return "0" if position == 9 else str(position + 1)
+
+
+def _choose_camera(camera_devices):
+    if len(camera_devices) == 1:
+        camera = camera_devices[0]
+        print(f"Using the only camera: {camera['name']}")
+        return camera["index"]
+
+    print("Available cameras (press a number to select):")
+    for position, camera in enumerate(camera_devices):
+        key = _camera_choice_key(position, len(camera_devices))
+        print(f"  [{key}] {camera['name']}")
+
+    import msvcrt
+
+    while True:
+        key = msvcrt.getwch()
+        if key in ("\x03", "\x1b"):
+            raise KeyboardInterrupt
+        for position, camera in enumerate(camera_devices):
+            if key == _camera_choice_key(position, len(camera_devices)):
+                print(key)
+                print(f"Selected: {camera['name']}")
+                return camera["index"]
 
 
 def _open_scrcpy_capture(title_query):
@@ -323,13 +385,20 @@ def _calibrate_position(norm_x, norm_y, left_edge, right_edge, center_y, frame_w
     center_x = (left_edge + right_edge) / 2.0
     calibrated_x = 0.5 + (norm_x - center_x) / diameter_x
     calibrated_y = 0.5 + (norm_y - center_y) / diameter_y
-    return max(0.0, min(1.0, calibrated_x)), max(0.0, min(1.0, calibrated_y))
+    offset_x = calibrated_x - 0.5
+    offset_y = calibrated_y - 0.5
+    distance = (offset_x * offset_x + offset_y * offset_y) ** 0.5
+    if distance > 0.5:
+        scale = 0.5 / distance
+        offset_x *= scale
+        offset_y *= scale
+    return max(0.0, min(1.0, 0.5 + offset_x)), max(0.0, min(1.0, 0.5 + offset_y))
 
 
 def _detect_led_positions(cv2, frame):
-    """Track the blue left and green right DS4 lightbars independently."""
+    """Track the blue left and red right DS4 lightbars independently."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    def find_color(hue_ranges):
+    def find_color(hue_ranges, expected_x):
         mask = None
         for lower, upper in hue_ranges:
             part = cv2.inRange(hsv, lower, upper)
@@ -341,14 +410,14 @@ def _detect_led_positions(cv2, frame):
         for contour in contours:
             area = cv2.contourArea(contour)
             x, y, width, height = cv2.boundingRect(contour)
-            aspect = width / max(1, height)
-            fill = area / max(1, width * height)
-            if area < 12 or width < 5 or height < 2 or aspect < 0.9 or fill < 0.05:
+            if area < 4 or width < 2 or height < 2:
                 continue
             roi = hsv[y:y + height, x:x + width]
             brightness = float(roi[:, :, 2].mean()) if roi.size else 0.0
             saturation = float(roi[:, :, 1].mean()) if roi.size else 0.0
-            score = area * (brightness / 255.0) * (saturation / 255.0) * min(aspect, 8.0)
+            center_x = (x + width / 2.0) / frame.shape[1]
+            position_score = max(0.05, 1.0 - abs(center_x - expected_x) * 3.0)
+            score = area * (brightness / 255.0) * (saturation / 255.0) * position_score
             candidates.append((score, contour))
         if not candidates:
             return None
@@ -383,19 +452,22 @@ def _detect_led_positions(cv2, frame):
             ))
         return sorted(bars, key=lambda bar: bar[3], reverse=True)
 
-    blue = find_color([((90, 120, 140), (140, 255, 255))])
-    green = find_color([((35, 120, 140), (85, 255, 255))])
+    blue = find_color([((112, 150, 55), (130, 255, 255))], expected_x=0.25)
+    red = find_color(
+        [((0, 120, 55), (10, 255, 255)), ((170, 120, 55), (180, 255, 255))],
+        expected_x=0.75,
+    )
 
     white_bars = find_white_bars()
-    if blue is None and green is None and len(white_bars) >= 2:
+    if blue is None and red is None and len(white_bars) >= 2:
         white_bars = sorted(white_bars[:2], key=lambda bar: bar[0])
         blue = white_bars[0][:3]
-        green = white_bars[1][:3]
+        red = white_bars[1][:3]
     elif blue is None and white_bars:
         blue = min(white_bars, key=lambda bar: abs(bar[0] - 0.25))[:3]
-    elif green is None and white_bars:
-        green = min(white_bars, key=lambda bar: abs(bar[0] - 0.75))[:3]
-    return blue, green
+    elif red is None and white_bars:
+        red = min(white_bars, key=lambda bar: abs(bar[0] - 0.75))[:3]
+    return blue, red
 
 
 HAND_CONNECTIONS = (
@@ -439,7 +511,12 @@ def main() -> int:
 
     if args.list_cameras:
         found = _find_cameras(cv2)
-        print("Available camera indices: " + (", ".join(map(str, found)) if found else "none"))
+        if not found:
+            print("Available cameras: none")
+        else:
+            print("Available cameras:")
+            for camera in found:
+                print(f"  [{camera['index']}] {camera['name']}")
         return 0
 
     scrcpy_capture = None
@@ -461,23 +538,7 @@ def main() -> int:
         if not available_cameras:
             print("Error: no cameras found")
             return 1
-        if len(available_cameras) == 1:
-            args.camera_index = available_cameras[0]
-            print(f"Using the only available camera: {args.camera_index}")
-        else:
-            print("Available cameras:")
-            for camera_index in available_cameras:
-                print(f"  [{camera_index}] Camera {camera_index}")
-            while True:
-                try:
-                    selected = int(input("Select camera index: "))
-                except (ValueError, EOFError):
-                    print("Enter one of the listed camera indices.")
-                    continue
-                if selected in available_cameras:
-                    args.camera_index = selected
-                    break
-                print("That camera index is not available.")
+        args.camera_index = _choose_camera(available_cameras)
 
     udp_addr = (args.host, args.port)
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -495,6 +556,12 @@ def main() -> int:
     if cap is not None and not cap.isOpened():
         print(f"Error: cannot open camera index {args.camera_index}")
         return 1
+    if cap is not None:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FPS, args.fps)
+        negotiated_fps = cap.get(cv2.CAP_PROP_FPS)
+        if negotiated_fps > 0:
+            print(f"Camera stream: {negotiated_fps:.0f} FPS (target {args.fps:.0f})")
 
     if args.input_mode == "ds4led":
         detect_hands = lambda _frame: []
@@ -519,6 +586,11 @@ def main() -> int:
     last_send = 0.0
     last_log = 0.0
     sent_count = 0
+    send_frame_count = 0
+    frame_count = 0
+    fps_window_start = time.perf_counter()
+    capture_fps = 0.0
+    send_fps = 0.0
     calibration_left_edge = None
     calibration_right_edge = None
     calibration_center_y = 0.5
@@ -528,8 +600,11 @@ def main() -> int:
     pending_calibration_center_y = 0.5
     pending_rest_depths = {}
     pending_rest_scales = {}
+    pending_push_threshold = args.push_threshold
     rest_depths = {}
     rest_scales = {}
+    calibrated_push_threshold = args.push_threshold
+    calibrated_push_release_threshold = args.push_release_threshold
     push_states = {"Left": False, "Right": False}
     push_metrics = {"Left": 0.0, "Right": 0.0}
     last_pressed = {"Left": 0, "Right": 0}
@@ -541,8 +616,8 @@ def main() -> int:
     hand_lost_timeout = 3.0
     debug_visible = True
     calibration_armed = False
+    calibration_rearm_required = False
     led_filtered = {"Left": None, "Right": None}
-    led_filter_alpha = 0.65
 
     source = "DS4 LED + L1/R1" if args.input_mode == "ds4led" else f"hand {args.input_mode}"
     print(f"Sending {source} data to {args.host}:{args.port}")
@@ -560,7 +635,7 @@ def main() -> int:
                             debug_visible = False
                         elif command == "CALIBRATE":
                             calibration_armed = True
-                            print("Calibration armed. Hold the peace sign with both hands, then release.")
+                            print("Calibration armed. Show peace signs with both hands: one at rest, one pushed, then release.")
                 except BlockingIOError:
                     pass
 
@@ -574,6 +649,16 @@ def main() -> int:
                 if not ok:
                     time.sleep(0.01)
                     continue
+
+            frame_count += 1
+            fps_now = time.perf_counter()
+            fps_elapsed = fps_now - fps_window_start
+            if fps_elapsed >= 1.0:
+                capture_fps = frame_count / fps_elapsed
+                send_fps = send_frame_count / fps_elapsed
+                frame_count = 0
+                send_frame_count = 0
+                fps_window_start = fps_now
 
             frame = cv2.flip(frame, 1)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -597,26 +682,31 @@ def main() -> int:
             right_y = last_right_y
             right_pressed = last_pressed["Right"]
 
-            hand_results = detect_hands(rgb)
+            hand_results = [] if args.input_mode == "ds4led" else detect_hands(rgb)
             led_positions = (None, None)
             if args.input_mode == "ds4led":
                 led_positions = _detect_led_positions(cv2, frame)
 
                 if calibration_armed and led_positions[0] is not None and led_positions[1] is not None:
                     blue_x, blue_y, _ = led_positions[0]
-                    green_x, green_y, _ = led_positions[1]
-                    calibration_left_edge = min(blue_x, green_x)
-                    calibration_right_edge = max(blue_x, green_x)
-                    calibration_center_y = (blue_y + green_y) / 2.0
+                    red_x, red_y, _ = led_positions[1]
+                    calibration_left_edge = min(blue_x, red_x)
+                    calibration_right_edge = max(blue_x, red_x)
+                    calibration_center_y = (blue_y + red_y) / 2.0
                     if calibration_right_edge - calibration_left_edge >= 0.1:
                         calibration_armed = False
-                        print("DS4 LED calibrated: circle set from blue/green lightbars.")
+                        print("DS4 LED calibrated: circle set from blue/red lightbars.")
 
             calibration_points = [
                 (norm_x, norm_y, hand_label, palm_depth)
                 for hand_label, norm_x, norm_y, _, is_calibration, _, palm_depth, palm_scale in hand_results
                 if is_calibration
             ]
+            if not calibration_points:
+                calibration_rearm_required = False
+            elif len(calibration_points) >= 2 and not calibration_armed and not calibration_rearm_required:
+                calibration_armed = True
+                print("Calibration gesture detected. Hold position, then release to set the circle.")
             gesture_active = calibration_armed and len(calibration_points) >= 2
             if gesture_active:
                 candidate_left = min(point[0] for point in calibration_points)
@@ -625,10 +715,14 @@ def main() -> int:
                     pending_calibration_left = candidate_left
                     pending_calibration_right = candidate_right
                     pending_calibration_center_y = sum(point[1] for point in calibration_points) / len(calibration_points)
+                    rest_depth = max(point[3] for point in calibration_points)
+                    push_depth = min(point[3] for point in calibration_points)
+                    depth_span = rest_depth - push_depth
                     pending_rest_depths = {
-                        label: depth
-                        for _, _, label, depth in calibration_points
+                        label: rest_depth
+                        for _, _, label, _ in calibration_points
                     }
+                    pending_push_threshold = max(0.01, min(0.2, depth_span * 0.7))
                     pending_rest_scales = {
                         label: scale
                         for label, _, _, scale in (
@@ -646,8 +740,11 @@ def main() -> int:
                     calibration_center_y = pending_calibration_center_y
                     rest_depths = pending_rest_depths.copy()
                     rest_scales = pending_rest_scales.copy()
+                    calibrated_push_threshold = pending_push_threshold
+                    calibrated_push_release_threshold = calibrated_push_threshold * 0.5
                     push_states = {"Left": False, "Right": False}
                     calibration_armed = False
+                    calibration_rearm_required = True
                     print("Camera calibrated: circle set from released gesture.")
                 pending_calibration_left = None
                 pending_calibration_right = None
@@ -656,15 +753,17 @@ def main() -> int:
             calibration_active = gesture_active
 
             if args.input_mode == "ds4led":
-                blue_led, green_led = led_positions
-                for hand_label, led in (("Left", blue_led), ("Right", green_led)):
+                blue_led, red_led = led_positions
+                for hand_label, led in (("Left", blue_led), ("Right", red_led)):
                     if led is None:
                         continue
                     led_x, led_y, led_contour = led
                     previous_led = led_filtered[hand_label]
-                    if previous_led is not None:
-                        led_x = (led_filter_alpha * led_x) + ((1.0 - led_filter_alpha) * previous_led[0])
-                        led_y = (led_filter_alpha * led_y) + ((1.0 - led_filter_alpha) * previous_led[1])
+                    if previous_led is not None and (
+                        abs(led_x - previous_led[0]) > 0.45
+                        or abs(led_y - previous_led[1]) > 0.35
+                    ):
+                        continue
                     led_filtered[hand_label] = (led_x, led_y)
                     if calibration_left_edge is not None and calibration_right_edge - calibration_left_edge >= 0.1:
                         led_x, led_y = _calibrate_position(
@@ -683,7 +782,7 @@ def main() -> int:
                     else:
                         right_x, right_y = led_x, led_y
                         last_right_x, last_right_y = led_x, led_y
-                        led_color = (0, 120, 255)
+                        led_color = (0, 0, 255)
                     last_seen[hand_label] = now
                     if args.preview and debug_visible:
                         cv2.drawContours(frame, [led_contour], -1, led_color, 2)
@@ -693,6 +792,13 @@ def main() -> int:
                         continue
                     last_seen[hand_label] = now
                     if is_calibration:
+                        if hand_label == "Left":
+                            left_pressed = 0
+                        else:
+                            right_pressed = 0
+                        last_pressed[hand_label] = 0
+                        push_states[hand_label] = False
+                        push_metrics[hand_label] = 0.0
                         continue
                     if args.input_mode == "push":
                         baseline_depth = rest_depths.get(hand_label)
@@ -701,20 +807,15 @@ def main() -> int:
                             is_shooting = False
                             push_states[hand_label] = False
                             push_metrics[hand_label] = 0.0
-                        elif push_states[hand_label]:
-                            scale_growth = (palm_scale - baseline_scale) / baseline_scale
-                            depth_growth = baseline_depth - palm_depth
-                            push_metrics[hand_label] = scale_growth
-                            is_shooting = scale_growth >= (args.push_threshold * 0.5)
-                            push_states[hand_label] = is_shooting
                         else:
-                            scale_growth = (palm_scale - baseline_scale) / baseline_scale
                             depth_growth = baseline_depth - palm_depth
-                            push_metrics[hand_label] = scale_growth
-                            is_shooting = (
-                                scale_growth >= args.push_threshold
-                                or (scale_growth >= args.push_threshold * 0.5 and depth_growth >= 0.03)
+                            push_metrics[hand_label] = depth_growth
+                            threshold = (
+                                calibrated_push_release_threshold
+                                if push_states[hand_label]
+                                else calibrated_push_threshold
                             )
+                            is_shooting = depth_growth >= threshold
                             push_states[hand_label] = is_shooting
                     if calibration_left_edge is not None and calibration_right_edge - calibration_left_edge >= 0.1:
                         norm_x, norm_y = _calibrate_position(
@@ -741,12 +842,19 @@ def main() -> int:
                         right_pressed = 1 if is_shooting else 0
                         last_pressed["Right"] = right_pressed
 
+            if calibration_armed:
+                left_pressed = 0
+                right_pressed = 0
+                last_pressed["Left"] = 0
+                last_pressed["Right"] = 0
+
             if now - last_send >= min_frame_dt:
                 controller_clicks = 1 if args.input_mode == "ds4led" else 0
                 msg = f"{left_x:.4f},{left_y:.4f},{left_pressed},{right_x:.4f},{right_y:.4f},{right_pressed},{controller_clicks}"
                 try:
                     udp_sock.sendto(msg.encode("ascii"), udp_addr)
                     sent_count += 1
+                    send_frame_count += 1
                 except BlockingIOError:
                     pass
                 except OSError:
@@ -766,27 +874,33 @@ def main() -> int:
                         circle_radius = int(((calibration_right_edge - calibration_left_edge) / 2.0) * w)
                         cv2.circle(frame, (circle_center_x, circle_center_y), circle_radius,
                                    (0, 255, 255), 2, cv2.LINE_AA)
-                    _draw_hand_skeleton(cv2, frame, hand_results)
+                    if args.input_mode != "ds4led":
+                        _draw_hand_skeleton(cv2, frame, hand_results)
                     if left_x > 0.0 or left_y > 0.0:
                         cv2.circle(frame, (int(left_x * w), int(left_y * h)), 10, (0, 255, 0), -1)
                         cv2.putText(frame, f"L:{left_pressed}", (int(left_x * w) + 8, int(left_y * h) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                     if right_x > 0.0 or right_y > 0.0:
-                        cv2.circle(frame, (int(right_x * w), int(right_y * h)), 10, (255, 0, 0), -1)
-                        cv2.putText(frame, f"R:{right_pressed}", (int(right_x * w) + 8, int(right_y * h) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                        cv2.circle(frame, (int(right_x * w), int(right_y * h)), 10, (0, 0, 255), -1)
+                        cv2.putText(frame, f"R:{right_pressed}", (int(right_x * w) + 8, int(right_y * h) - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
                     capture_label = "SCRCPY MONITOR" if scrcpy_capture is not None else f"CAMERA {args.camera_index}"
                     cv2.putText(frame, f"{capture_label} {frame.shape[1]}x{frame.shape[0]}", (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                    cv2.putText(frame, f"Sent: {sent_count}", (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                    cv2.putText(frame, f"Push growth L:{push_metrics['Left']:.2f} R:{push_metrics['Right']:.2f} / {args.push_threshold:.2f}", (10, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                    cv2.putText(frame, f"Capture: {capture_fps:.1f} FPS | Send: {send_fps:.1f} FPS", (10, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+                    cv2.putText(frame, f"Push depth L:{push_metrics['Left']:.2f} R:{push_metrics['Right']:.2f} / {calibrated_push_threshold:.2f}", (10, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                     if calibration_armed and not calibration_active:
-                        calibration_status = "PRESS CONTROLLER, THEN PEACE SIGN"
+                        calibration_status = "PEACE: ONE REST, ONE PUSH"
                     elif calibration_active:
                         calibration_status = "SETTING... RELEASE TO APPLY"
                     else:
                         calibration_status = "CALIBRATED" if calibration_left_edge is not None else "NOT CALIBRATED"
                     cv2.putText(frame, f"Mode: {args.input_mode} | Circle: {calibration_status}", (10, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255) if calibration_left_edge is not None else (180, 180, 180), 1)
                 cv2.imshow("Camera Sender", frame)
-                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("c"):
+                    calibration_armed = True
+                    calibration_active = False
+                    print("Calibration armed. Show peace signs with both hands: one at rest, one pushed, then release.")
+                elif key == ord("q"):
                     break
 
     except KeyboardInterrupt:
