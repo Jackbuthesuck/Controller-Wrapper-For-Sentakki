@@ -33,12 +33,11 @@ bool ControllerMapper::startCameraSenderProcess() {
         cameraModeArg = "ds4led";
     }
     const std::string modeArg = std::string(" --input-mode ") + cameraModeArg;
-    const std::string performanceArg = " --fps 60";
     const std::string cameraArg = cameraIndex == -3
         ? " --scrcpy-screen -1"
         : cameraIndex == -2
         ? " --scrcpy-window scrcpy"
-        : " --camera-index -1";
+        : std::string(" --camera-index ") + std::to_string(cameraIndex);
     const std::string statusArg = " --status-port 8767";
 
     // Candidate launch commands, in order.
@@ -47,24 +46,24 @@ bool ControllerMapper::startCameraSenderProcess() {
     char pyEnv[512] = {};
     DWORD pyLen = GetEnvironmentVariableA("PYTHON_EXE", pyEnv, sizeof(pyEnv));
     if (pyLen > 0 && pyLen < sizeof(pyEnv)) {
-        candidates.push_back(std::string("\"") + pyEnv + "\" \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + performanceArg + statusArg);
+        candidates.push_back(std::string("\"") + pyEnv + "\" \"" + scriptPath + "\"" + modeArg + cameraArg + statusArg);
     }
 
     char foundPython[MAX_PATH] = {};
     if (SearchPathA(nullptr, "python.exe", nullptr, MAX_PATH, foundPython, nullptr) > 0) {
-        candidates.push_back(std::string("\"") + foundPython + "\" \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + performanceArg + statusArg);
+        candidates.push_back(std::string("\"") + foundPython + "\" \"" + scriptPath + "\"" + modeArg + cameraArg + statusArg);
     }
 
     if (SearchPathA(nullptr, "py.exe", nullptr, MAX_PATH, foundPython, nullptr) > 0) {
-        candidates.push_back(std::string("\"") + foundPython + "\" -3 \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + performanceArg + statusArg);
+        candidates.push_back(std::string("\"") + foundPython + "\" -3 \"" + scriptPath + "\"" + modeArg + cameraArg + statusArg);
     }
 
     char localAppData[MAX_PATH] = {};
     DWORD localAppDataLength = GetEnvironmentVariableA("LOCALAPPDATA", localAppData, MAX_PATH);
     if (localAppDataLength > 0 && localAppDataLength < MAX_PATH) {
-        candidates.push_back(std::string("\"") + localAppData + "\\Programs\\Python\\Python312\\python.exe\" \"" + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + performanceArg + statusArg);
+        candidates.push_back(std::string("\"") + localAppData + "\\Programs\\Python\\Python312\\python.exe\" \"" + scriptPath + "\"" + modeArg + cameraArg + statusArg);
     }
-    candidates.push_back(std::string("\"C:\\Program Files\\Python310\\python.exe\" \"") + scriptPath + "\" --preview --auto-download-model" + modeArg + cameraArg + performanceArg + statusArg);
+    candidates.push_back(std::string("\"C:\\Program Files\\Python310\\python.exe\" \"") + scriptPath + "\"" + modeArg + cameraArg + statusArg);
 
     SOCKET statusSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     sockaddr_in statusAddress = {};

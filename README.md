@@ -46,9 +46,11 @@ I love maimai.
 - Push mode uses forward palm depth relative to the neutral depth captured during calibration
 - Open-hand mode uses three or more extended fingers for touch-down; a curled hand is rest
 - DS4 LED mode disables hand detection, tracks the bright lightbar, and uses physical DS4 L1/R1 for clicks
-- Hand modes: show a peace sign with both hands; hold position until the circle is measured, then release to apply calibration. No controller is required
+- Hand modes: show a peace sign with both hands at their neutral rest depth; hold position until the circle is measured, then release to apply calibration. No controller is required
 - DS4 LED mode: press the same calibration control while both blue/red lightbars are visible; their positions immediately define the circle
-- `--push-threshold` controls normalized forward depth change; default is `0.04` (roughly 4% of the image width, not centimeters)
+- `--push-threshold` controls normalized forward depth change; default is `0.025` (roughly 2.5% of the image width, not centimeters)
+- Large LED position jumps must appear in consecutive frames before they are accepted, reducing one-frame noise without permanently blocking a real move. Tune `led_jump_confirmations` and `led_jump_match_distance` in `camera_config.json` if needed.
+- White LED fallback is disabled by default because bright reflections can be mistaken for lightbars. Enable `allow_white_led_fallback` in `camera_config.json` only when the LEDs are intentionally appearing white and the background is clean.
 - Calibration: hold both hands in a peace sign with index and middle extended and ring and pinky curled. Their weighted palm anchors define the play-space circle.
 - Calibration uses a circular play area; it is intentionally not treated as a square because DirectInput axis behavior can be unreliable near the corners.
 - Controller mapping note: D-pad Right is the only D-pad direction considered reliably mapped. Use it for calibration or menu actions where applicable.
@@ -80,7 +82,33 @@ build.bat
 
 ## Camera Sender (Python, Optional)
 
-The normal workflow does not require starting Python manually. `ControllerInput.exe` launches the sender when Camera mode is selected. Run it manually only for troubleshooting, standalone camera testing, or when the executable reports that it could not start the sender.
+The normal workflow does not require starting Python manually. `ControllerInput.exe` launches the sender when Camera mode is selected. The sender automatically loads `camera_config.json` from the same folder, so normal tuning does not require command-line launch. Command-line options can still override the JSON settings for standalone testing. If the camera still reports about 15 FPS, it likely cannot provide a faster mode at that resolution or is limited by its driver or USB connection.
+
+The config accepts JSONC-style `//` or `/* ... */` comments. The startup selections use the same numeric indices shown by the native menus:
+
+```json
+{
+	// Set true to skip the native menus during debugging.
+	"auto_start": false,
+	// 1=camera, 2=touch, 3=keyboard, 4=mouse.
+	"startup_mode": 1,
+	// 1=DS4 LED, 2=push, 3=open hand.
+	"input_mode": 1,
+	// 1=webcam, 2=scrcpy window, 3=scrcpy monitor.
+	"camera_source": 1,
+	"camera_index": 0,
+	"preview": true,
+	"auto_download_model": true,
+	"fps": 60,
+	"width": 640,
+	"height": 480,
+	"led_jump_confirmations": 2,
+	"led_jump_match_distance": 0.12,
+	"allow_white_led_fallback": false
+}
+```
+
+Set `auto_start` to `true` to skip the native mode and camera-source menus for quick debugging. Use `startup_mode` values `1-4`, `input_mode` values `1-3`, and `camera_source` values `1-3` as described in the example. Use `camera_index` for a webcam device, or set it to `-1` to let the sender list and prompt for a camera. Set `auto_start` back to `false` to restore the menus. The old string names are still accepted by the native loader and Python sender.
 
 Install dependencies:
 
@@ -108,7 +136,7 @@ python camera_sender.py --preview --auto-download-model
 
 **Manual build:**
 ```bash
-cl /EHsc /std:c++20 /c main.cpp ControllerMapper.cpp TouchMode.cpp MouseMode.cpp KeyboardMode.cpp
+cl /EHsc /std:c++20 /c main.cpp ControllerMapper.cpp CameraMode.cpp TouchMode.cpp MouseMode.cpp KeyboardMode.cpp
 link main.obj ControllerMapper.obj TouchMode.obj MouseMode.obj KeyboardMode.obj dinput8.lib dxguid.lib xinput.lib user32.lib gdi32.lib msimg32.lib windowsapp.lib /out:ControllerInput.exe
 ```
 
@@ -127,7 +155,7 @@ link main.obj ControllerMapper.obj TouchMode.obj MouseMode.obj KeyboardMode.obj 
 This program uses input injection APIs and may be flagged by antivirus software. It's safe to use:
 
 - Open source code
-- No network activity
+- Loopback UDP only for local camera input; optional model download is controlled by `auto_download_model`
 - No system modifications
 - Portable executable
 

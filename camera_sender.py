@@ -1,49 +1,111 @@
 import argparse
+import json
 import socket
 import time
 from pathlib import Path
 from urllib.request import urlretrieve
 
 
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("camera_config.json")
+
+
+def _strip_json_comments(text):
+    result = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if in_string:
+            result.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if character == '"':
+            in_string = True
+            result.append(character)
+            index += 1
+        elif text.startswith("//", index):
+            newline = text.find("\n", index + 2)
+            if newline == -1:
+                break
+            result.append("\n")
+            index = newline + 1
+        elif text.startswith("/*", index):
+            end_comment = text.find("*/", index + 2)
+            if end_comment == -1:
+                break
+            index = end_comment + 2
+        else:
+            result.append(character)
+            index += 1
+    return "".join(result)
+
+
+def _load_camera_config(config_path, required=False):
+    if not config_path.exists():
+        if required:
+            raise RuntimeError(f"Camera config not found: {config_path}")
+        return {}
+    try:
+        with config_path.open("r", encoding="utf-8") as config_file:
+            config = json.loads(_strip_json_comments(config_file.read()))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read camera config {config_path}: {exc}") from exc
+    if not isinstance(config, dict):
+        raise RuntimeError(f"Camera config must contain a JSON object: {config_path}")
+    return config
+
+
 def parse_args() -> argparse.Namespace:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    config_args, _ = config_parser.parse_known_args()
+    config = _load_camera_config(config_args.config, required=config_args.config != DEFAULT_CONFIG_PATH)
+
+    input_mode = config.get("input_mode", "push")
+    if isinstance(input_mode, int) and not isinstance(input_mode, bool):
+        input_mode = {1: "ds4led", 2: "push", 3: "open"}.get(input_mode)
+    if input_mode not in ("push", "open", "curl", "ds4led"):
+        raise RuntimeError("input_mode must be 1 (DS4 LED), 2 (push), 3 (open), or a supported mode name")
+
     parser = argparse.ArgumentParser(
         description="Lightweight hand tracker sender for ControllerInput.exe"
     )
-    parser.add_argument("--host", default="127.0.0.1", help="UDP destination host")
-    parser.add_argument("--port", type=int, default=8765, help="UDP destination port")
-    parser.add_argument("--control-port", type=int, default=8766, help="Debug control port")
-    parser.add_argument("--status-port", type=int, default=8767, help="Startup status port")
-    parser.add_argument("--camera-index", type=int, default=-1, help="Camera index; -1 lists and selects available cameras")
+    parser.add_argument("--config", type=Path, default=config_args.config, help="Camera settings JSON path")
+    parser.add_argument("--host", default=config.get("host", "127.0.0.1"), help="UDP destination host")
+    parser.add_argument("--port", type=int, default=config.get("port", 8765), help="UDP destination port")
+    parser.add_argument("--control-port", type=int, default=config.get("control_port", 8766), help="Debug control port")
+    parser.add_argument("--status-port", type=int, default=config.get("status_port", 8767), help="Startup status port")
+    parser.add_argument("--camera-index", type=int, default=config.get("camera_index", -1), help="Camera index; -1 lists and selects available cameras")
     parser.add_argument("--scrcpy-window", help="Capture a scrcpy window whose title contains this text")
-    parser.add_argument("--scrcpy-screen", type=int, default=None, help="Capture an entire monitor; -1 prompts when multiple monitors exist")
+    parser.add_argument("--scrcpy-screen", type=int, default=config.get("scrcpy_screen"), help="Capture an entire monitor; -1 prompts when multiple monitors exist")
     parser.add_argument("--list-cameras", action="store_true", help="List available camera indices and exit")
-    parser.add_argument("--max-hands", type=int, default=2, help="Max hands to track")
-    parser.add_argument(
-        "--input-mode",
-        choices=("push", "open", "curl", "ds4led"),
-        default="push",
-        help="Camera input: index push, open hand, or DS4 LED tracking",
-    )
-    parser.add_argument("--push-threshold", type=float, default=0.025, help="Palm depth growth required for push click")
-    parser.add_argument("--push-release-threshold", type=float, default=0.012, help="Palm depth growth required to keep a push held")
-    parser.add_argument("--min-detect", type=float, default=0.5, help="Min detection confidence")
-    parser.add_argument("--min-track", type=float, default=0.25, help="Min tracking confidence")
-    parser.add_argument("--preview", action="store_true", help="Show camera preview window")
-    parser.add_argument("--fps", type=float, default=60.0, help="Target send FPS")
-    parser.add_argument("--log", action="store_true", help="Print outgoing packet snapshots")
-    parser.add_argument("--log-interval", type=float, default=0.5, help="Seconds between packet logs")
-    parser.add_argument(
-        "--model-path",
-        default="hand_landmarker.task",
-        help="Path to MediaPipe Hand Landmarker .task model (used when mp.solutions is unavailable)",
-    )
-    parser.add_argument(
-        "--auto-download-model",
-        action="store_true",
-        help="Auto-download hand_landmarker.task if missing (requires internet)",
-    )
+    parser.add_argument("--max-hands", type=int, default=config.get("max_hands", 2), help="Max hands to track")
+    parser.add_argument("--input-mode", choices=("push", "open", "curl", "ds4led"), default=input_mode, help="Camera input: 1=DS4 LED, 2=push, 3=open; names are also accepted")
+    parser.add_argument("--push-threshold", type=float, default=config.get("push_threshold", 0.025), help="Palm depth growth required for push click")
+    parser.add_argument("--push-release-threshold", type=float, default=config.get("push_release_threshold", 0.012), help="Palm depth growth required to keep a push held")
+    parser.add_argument("--min-detect", type=float, default=config.get("min_detect", 0.5), help="Min detection confidence")
+    parser.add_argument("--min-track", type=float, default=config.get("min_track", 0.25), help="Min tracking confidence")
+    parser.add_argument("--preview", action="store_true", default=config.get("preview", False), help="Show camera preview window")
+    parser.add_argument("--fps", type=float, default=config.get("fps", 60.0), help="Target send FPS")
+    parser.add_argument("--width", type=int, default=config.get("width", 640), help="Requested camera width")
+    parser.add_argument("--height", type=int, default=config.get("height", 480), help="Requested camera height")
+    parser.add_argument("--led-jump-confirmations", type=int, default=config.get("led_jump_confirmations", 2), help="Consecutive frames required to accept a large LED move")
+    parser.add_argument("--led-jump-match-distance", type=float, default=config.get("led_jump_match_distance", 0.12), help="Maximum normalized distance between frames when confirming an LED move")
+    white_fallback = parser.add_mutually_exclusive_group()
+    white_fallback.add_argument("--allow-white-led-fallback", dest="allow_white_led_fallback", action="store_true", default=config.get("allow_white_led_fallback", False), help="Use bright, low-saturation bars if colored LED detection fails")
+    white_fallback.add_argument("--no-white-led-fallback", dest="allow_white_led_fallback", action="store_false", help="Disable white LED fallback")
+    parser.add_argument("--log", action="store_true", default=config.get("log", False), help="Print outgoing packet snapshots")
+    parser.add_argument("--log-interval", type=float, default=config.get("log_interval", 0.5), help="Seconds between packet logs")
+    parser.add_argument("--model-path", default=config.get("model_path", "hand_landmarker.task"), help="Path to MediaPipe Hand Landmarker .task model (used when mp.solutions is unavailable)")
+    parser.add_argument("--auto-download-model", action="store_true", default=config.get("auto_download_model", False), help="Auto-download hand_landmarker.task if missing (requires internet)")
     return parser.parse_args()
-
 
 def _make_hand_detector(mp, args):
     """Return a callable that maps frames to hand labels, markers, and landmarks."""
@@ -70,10 +132,7 @@ def _make_hand_detector(mp, args):
                         pressed = _is_open_hand(hand_landmarks.landmark)
                     else:
                         pressed = idx_tip.y < (mid_tip.y - 0.04)
-                    if calibration_pose:
-                        marker_x, marker_y = _palm_anchor(hand_landmarks.landmark)
-                    else:
-                        marker_x, marker_y = _palm_anchor(hand_landmarks.landmark)
+                    marker_x, marker_y = _palm_anchor(hand_landmarks.landmark)
                     landmarks = [(float(point.x), float(point.y)) for point in hand_landmarks.landmark]
                     palm_depth = _palm_depth(hand_landmarks.landmark)
                     palm_scale = _palm_scale(hand_landmarks.landmark)
@@ -149,10 +208,7 @@ def _make_hand_detector(mp, args):
                 pressed = _is_open_hand(hand_landmarks)
             else:
                 pressed = idx_tip.y < (mid_tip.y - 0.04)
-            if calibration_pose:
-                marker_x, marker_y = _palm_anchor(hand_landmarks)
-            else:
-                marker_x, marker_y = _palm_anchor(hand_landmarks)
+            marker_x, marker_y = _palm_anchor(hand_landmarks)
             landmarks = [(float(point.x), float(point.y)) for point in hand_landmarks]
             palm_depth = _palm_depth(hand_landmarks)
             palm_scale = _palm_scale(hand_landmarks)
@@ -395,7 +451,7 @@ def _calibrate_position(norm_x, norm_y, left_edge, right_edge, center_y, frame_w
     return max(0.0, min(1.0, 0.5 + offset_x)), max(0.0, min(1.0, 0.5 + offset_y))
 
 
-def _detect_led_positions(cv2, frame):
+def _detect_led_positions(cv2, frame, allow_white_fallback=False):
     """Track the blue left and red right DS4 lightbars independently."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     def find_color(hue_ranges, expected_x):
@@ -458,6 +514,9 @@ def _detect_led_positions(cv2, frame):
         expected_x=0.75,
     )
 
+    if not allow_white_fallback:
+        return blue, red
+
     white_bars = find_white_bars()
     if blue is None and red is None and len(white_bars) >= 2:
         white_bars = sorted(white_bars[:2], key=lambda bar: bar[0])
@@ -503,7 +562,6 @@ def main() -> int:
 
     try:
         import cv2
-        import mediapipe as mp
     except Exception as exc:
         print("Missing dependencies. Install with: pip install -r requirements.txt")
         print(f"Import error: {exc}")
@@ -558,16 +616,24 @@ def main() -> int:
         return 1
     if cap is not None:
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
         cap.set(cv2.CAP_PROP_FPS, args.fps)
         negotiated_fps = cap.get(cv2.CAP_PROP_FPS)
-        if negotiated_fps > 0:
-            print(f"Camera stream: {negotiated_fps:.0f} FPS (target {args.fps:.0f})")
+        negotiated_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        negotiated_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(
+            f"Camera stream: {negotiated_width}x{negotiated_height} at "
+            f"{negotiated_fps:.0f} FPS (target {args.fps:.0f})"
+        )
 
     if args.input_mode == "ds4led":
         detect_hands = lambda _frame: []
         print("DS4 LED mode: hand detection disabled; using lightbar plus physical L1/R1.")
     else:
         try:
+            import mediapipe as mp
             detect_hands = _make_hand_detector(mp, args)
         except Exception as exc:
             print("Failed to initialize hand detector backend.")
@@ -618,6 +684,7 @@ def main() -> int:
     calibration_armed = False
     calibration_rearm_required = False
     led_filtered = {"Left": None, "Right": None}
+    led_jump_candidates = {"Left": None, "Right": None}
 
     source = "DS4 LED + L1/R1" if args.input_mode == "ds4led" else f"hand {args.input_mode}"
     print(f"Sending {source} data to {args.host}:{args.port}")
@@ -635,7 +702,7 @@ def main() -> int:
                             debug_visible = False
                         elif command == "CALIBRATE":
                             calibration_armed = True
-                            print("Calibration armed. Show peace signs with both hands: one at rest, one pushed, then release.")
+                            print("Calibration armed. Show peace signs with both hands at neutral rest depth, then release.")
                 except BlockingIOError:
                     pass
 
@@ -661,7 +728,6 @@ def main() -> int:
                 fps_window_start = fps_now
 
             frame = cv2.flip(frame, 1)
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             now = time.perf_counter()
             for hand_label in ("Left", "Right"):
                 if now - last_seen[hand_label] > hand_lost_timeout:
@@ -682,10 +748,18 @@ def main() -> int:
             right_y = last_right_y
             right_pressed = last_pressed["Right"]
 
-            hand_results = [] if args.input_mode == "ds4led" else detect_hands(rgb)
+            if args.input_mode == "ds4led":
+                hand_results = []
+            else:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                hand_results = detect_hands(rgb)
             led_positions = (None, None)
             if args.input_mode == "ds4led":
-                led_positions = _detect_led_positions(cv2, frame)
+                led_positions = _detect_led_positions(
+                    cv2,
+                    frame,
+                    allow_white_fallback=args.allow_white_led_fallback,
+                )
 
                 if calibration_armed and led_positions[0] is not None and led_positions[1] is not None:
                     blue_x, blue_y, _ = led_positions[0]
@@ -715,14 +789,11 @@ def main() -> int:
                     pending_calibration_left = candidate_left
                     pending_calibration_right = candidate_right
                     pending_calibration_center_y = sum(point[1] for point in calibration_points) / len(calibration_points)
-                    rest_depth = max(point[3] for point in calibration_points)
-                    push_depth = min(point[3] for point in calibration_points)
-                    depth_span = rest_depth - push_depth
                     pending_rest_depths = {
-                        label: rest_depth
-                        for _, _, label, _ in calibration_points
+                        label: depth
+                        for _, _, label, depth in calibration_points
                     }
-                    pending_push_threshold = max(0.01, min(0.2, depth_span * 0.7))
+                    pending_push_threshold = args.push_threshold
                     pending_rest_scales = {
                         label: scale
                         for label, _, _, scale in (
@@ -763,7 +834,20 @@ def main() -> int:
                         abs(led_x - previous_led[0]) > 0.45
                         or abs(led_y - previous_led[1]) > 0.35
                     ):
-                        continue
+                        pending_jump = led_jump_candidates[hand_label]
+                        jump_is_continuous = (
+                            pending_jump is not None
+                            and now - pending_jump[3] <= 0.3
+                            and ((led_x - pending_jump[0]) ** 2 + (led_y - pending_jump[1]) ** 2) ** 0.5
+                            <= max(0.01, args.led_jump_match_distance)
+                        )
+                        jump_count = pending_jump[2] + 1 if jump_is_continuous else 1
+                        if jump_count < max(1, args.led_jump_confirmations):
+                            led_jump_candidates[hand_label] = (led_x, led_y, jump_count, now)
+                            continue
+                        led_jump_candidates[hand_label] = None
+                    else:
+                        led_jump_candidates[hand_label] = None
                     led_filtered[hand_label] = (led_x, led_y)
                     if calibration_left_edge is not None and calibration_right_edge - calibration_left_edge >= 0.1:
                         led_x, led_y = _calibrate_position(
@@ -899,7 +983,7 @@ def main() -> int:
                 if key == ord("c"):
                     calibration_armed = True
                     calibration_active = False
-                    print("Calibration armed. Show peace signs with both hands: one at rest, one pushed, then release.")
+                    print("Calibration armed. Show peace signs with both hands at neutral rest depth, then release.")
                 elif key == ord("q"):
                     break
 
