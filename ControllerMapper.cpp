@@ -1,5 +1,22 @@
 #include "ControllerInput.h"
 
+namespace {
+std::string wideToUtf8(const wchar_t* value) {
+    if (!value) {
+        return {};
+    }
+
+    int length = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+    if (length <= 1) {
+        return {};
+    }
+
+    std::string result(length - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value, -1, result.data(), length, nullptr, nullptr);
+    return result;
+}
+}
+
 // ========== Constructor & Initialization ==========
 
 ControllerMapper::ControllerMapper(InputMode mode, CameraInputMode cameraMode, int cameraDeviceIndex, ControllerSourceMode controllerSource) : di(nullptr), joystick(nullptr), hwnd(nullptr), overlayHwnd(nullptr),
@@ -214,7 +231,7 @@ void ControllerMapper::detectMonitorFromCursor(bool verbose) {
                 if (verbose) {
                     std::cout << "Monitor changed! New monitor: " << newMonitorWidth << "x" << newMonitorHeight 
                               << " at (" << newMonitorLeft << ", " << newMonitorTop << ")" << std::endl;
-                    std::cout << "Monitor name: " << monitorInfoEx.szDevice << std::endl;
+                    std::cout << "Monitor name: " << wideToUtf8(monitorInfoEx.szDevice) << std::endl;
                 }
                 
                 // Update monitor handle and info
@@ -553,7 +570,7 @@ std::vector<ControllerInfo> ControllerMapper::listAllControllers() {
         std::vector<ControllerInfo>* controllers = (std::vector<ControllerInfo>*)pvRef;
         ControllerInfo info;
         info.type = ControllerType::DirectInput;
-        info.name = lpddi->tszProductName;
+        info.name = wideToUtf8(lpddi->tszProductName);
         info.guid = lpddi->guidInstance;
         controllers->push_back(info);
         return DIENUM_CONTINUE;
@@ -1341,7 +1358,7 @@ void ControllerMapper::drawDebugText(HDC hdc, RECT rect) {
     if (textY < 30) textY = 30; // Don't go too high
     
     // Create large, bold font for easy reading
-    HFONT hFont = CreateFont(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+    HFONT hFont = CreateFontA(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                             DEFAULT_PITCH | FF_DONTCARE, "Consolas");
     HFONT oldFont = (HFONT)SelectObject(hdc, hFont);
@@ -1548,7 +1565,7 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         MONITORINFOEX monitorInfoEx = {};
         monitorInfoEx.cbSize = sizeof(MONITORINFOEX);
         if (GetMonitorInfo(overlayMon, (MONITORINFO*)&monitorInfoEx)) {
-            info += "Monitor: " + std::string(monitorInfoEx.szDevice) + "\r\n";
+            info += "Monitor: " + wideToUtf8(monitorInfoEx.szDevice) + "\r\n";
             LONG actualMonLeft = monitorInfoEx.rcMonitor.left;
             LONG actualMonTop = monitorInfoEx.rcMonitor.top;
             LONG actualMonWidth = monitorInfoEx.rcMonitor.right - monitorInfoEx.rcMonitor.left;

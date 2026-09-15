@@ -1,6 +1,6 @@
 {
   // 0=interactive menus, 1=skip menus and auto-start for debugging.
-  "auto_start": 0,
+  "auto_start": 1,
   // 0=show the mode menu, 1=camera, 2=touch, 3=keyboard, 4=mouse.
   "startup_mode": 1,
   // 0=show the camera-input menu, 1=DS4 LED, 2=push, 3=open hand.

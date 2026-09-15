@@ -22,3 +22,26 @@ test-results/
 # Visual Studio
 .vs/
 *.vcxproj.user
+*.suo
+
+# MSBuild output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+Win32/
+ARM/
+ARM64/
+*.tlog/
+*.lastbuildstate
+
+# Visual Studio generated project state
+*.VC.db
+*.VC.VC.opendb
+*.opensdf
+*.sdf
+*.user
+*.sln.docstates
+Controll.*/
