@@ -6,7 +6,19 @@
 *.exp
 *.lib
 
+# Python
+**/__pycache__/
+*.py[cod]
+**/.pytest_cache/
+.venv/
+
+# Test and coverage artifacts
+.coverage
+coverage.xml
+htmlcov/
+pytest-report.xml
+test-results/
+
 # Visual Studio
 .vs/
 *.vcxproj.user
-

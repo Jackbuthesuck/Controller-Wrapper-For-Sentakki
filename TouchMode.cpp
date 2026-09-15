@@ -483,7 +483,14 @@ void ControllerMapper::sendPalmTouch(double centerX, double centerY, int centerT
 }
 
 void ControllerMapper::sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp) {
-    if (!inputInjectorInitialized || !inputInjector) return;
+    if (!inputInjectorInitialized || !inputInjector) {
+        static bool warnedNotReady = false;
+        if (!warnedNotReady) {
+            std::cout << "[Touch] Ignored: InputInjector is not initialized." << std::endl;
+            warnedNotReady = true;
+        }
+        return;
+    }
     
     // Update touch tracking for overlay
     if (touchId >= 0 && touchId < 20) {

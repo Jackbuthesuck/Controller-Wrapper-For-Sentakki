@@ -2,8 +2,8 @@
 
 // ========== Constructor & Initialization ==========
 
-ControllerMapper::ControllerMapper(InputMode mode) : di(nullptr), joystick(nullptr), hwnd(nullptr), overlayHwnd(nullptr),
-                    hasXInputController(false), xInputControllerIndex(0),
+ControllerMapper::ControllerMapper(InputMode mode, CameraInputMode cameraMode, int cameraDeviceIndex, ControllerSourceMode controllerSource) : di(nullptr), joystick(nullptr), hwnd(nullptr), overlayHwnd(nullptr),
+                    hasXInputController(false), xInputControllerIndex(0), aggregateControllerButtons(false),
                     overlayLeftX(0.0), overlayLeftY(0.0), overlayRightX(0.0), overlayRightY(0.0),
                     overlayLeftAngle(-1.0), overlayRightAngle(-1.0), overlayStickRadius(150),
                     overlayLeftAlpha(0), overlayRightAlpha(0), updateIntervalMs(16),
@@ -21,7 +21,7 @@ ControllerMapper::ControllerMapper(InputMode mode) : di(nullptr), joystick(nullp
                     prevOverlayL3CenterX(-999.0), prevOverlayL3CenterY(-999.0),
                     prevOverlayR3CenterX(-999.0), prevOverlayR3CenterY(-999.0),
                     prevOverlayL3Alpha(-1), prevOverlayR3Alpha(-1),
-                    currentMode(mode), leftTouchActive(false), rightTouchActive(false), 
+                    currentMode(mode), cameraInputMode(cameraMode), cameraIndex(cameraDeviceIndex), controllerSourceMode(controllerSource), leftTouchActive(false), rightTouchActive(false),
                     prevL1(false), prevR1(false),
                     overlayPosX(0), overlayPosY(0), inputInjector(nullptr), inputInjectorInitialized(false),
                     currentLHeldDirection(-1), currentRHeldDirection(-1),
@@ -44,12 +44,33 @@ ControllerMapper::ControllerMapper(InputMode mode) : di(nullptr), joystick(nullp
 
 bool ControllerMapper::initialize() {
     initializeControllers();
-    createGUI();
+        if (!hwnd) {
+            createGUI();
+        }
+    // Start UDP listener for external CV input
+    startUDPListener(8765);
+    if (currentMode == InputMode::Camera) {
+        if (!startCameraSenderProcess()) {
+            logError("Failed to auto-start camera_sender.py. You can still run it manually.");
+        }
+    }
     return (hwnd != nullptr);
 }
 
 ControllerMapper::~ControllerMapper() {
-    if (joystick) {
+    stopCameraSenderProcess();
+    // Stop UDP listener if running
+    stopUDPListener();
+    if (aggregateControllerButtons) {
+        for (LPDIRECTINPUTDEVICE8 device : aggregateJoysticks) {
+            if (device) {
+                device->Unacquire();
+                device->Release();
+            }
+        }
+        aggregateJoysticks.clear();
+        joystick = nullptr;
+    } else if (joystick) {
         joystick->Unacquire();
         joystick->Release();
     }
@@ -231,22 +252,6 @@ void ControllerMapper::detectMonitorFromCursor(bool verbose) {
     }
 }
 
-POINT ControllerMapper::checkMonitorChange() {
-    // Get cursor position once and return it so it can be reused for debug updates
-    POINT cursorPos = {0, 0};
-    if (GetCursorPos(&cursorPos)) {
-        // Check if cursor is outside current monitor bounds
-        // Use strict bounds checking to avoid edge flickering
-        if (cursorPos.x < monitorLeft || cursorPos.x >= monitorRight ||
-            cursorPos.y < monitorTop || cursorPos.y >= monitorBottom) {
-            // Cursor crossed monitor border - detect new monitor immediately
-            // detectMonitorFromCursor will check if monitor actually changed before updating
-            detectMonitorFromCursor(false); // Silent detection
-        }
-    }
-    return cursorPos;
-}
-
 void ControllerMapper::updateRefreshRate() {
     // Get screen refresh rate from the detected monitor
     MONITORINFOEX monitorInfoEx = {};
@@ -391,8 +396,8 @@ void ControllerMapper::createOverlay() {
     ShowWindow(overlayHwnd, SW_SHOW);
     UpdateWindow(overlayHwnd);
     
-    // Initialize touch injection (only if in touch mode)
-    if (currentMode == InputMode::Touch) {
+    // Camera mode uses the same touch injection pipeline as Touch mode.
+    if (currentMode == InputMode::Touch || currentMode == InputMode::Camera) {
         initializeTouchInjection();
     }
 }
@@ -400,22 +405,83 @@ void ControllerMapper::createOverlay() {
 // ========== Controller Initialization ==========
 
 void ControllerMapper::initializeControllers() {
-    // List all available controllers and let user choose
+    // Hand camera modes are fully camera-driven, including calibration.
+    if (currentMode == InputMode::Camera && cameraInputMode != CameraInputMode::DS4Led) {
+        noControllerMode = true;
+        hasXInputController = false;
+        joystick = nullptr;
+        std::cout << "Camera mode: hand tracking and calibration do not require a controller." << std::endl;
+        detectMonitorFromCursor(true);
+        createOverlay();
+        return;
+    }
+
+    // List all available controllers, then choose the source policy based on mode and count.
     std::vector<ControllerInfo> availableControllers = listAllControllers();
-    
+
     if (availableControllers.empty()) {
-        std::cerr << "No compatible controllers found!" << std::endl;
-        std::cerr << "Please connect a controller and restart the application." << std::endl;
-        std::cerr << "Press any key to exit..." << std::endl;
-        _getch();
-        exit(1);
+        std::cout << "No compatible controllers found." << std::endl;
+        std::cout << "Continue without a controller? [Y/N]: ";
+        char choice = _getch();
+        std::cout << choice << std::endl;
+        if (choice != 'y' && choice != 'Y') {
+            std::cout << "Controller is required for this mode." << std::endl;
+            return;
+        }
+        noControllerMode = true;
+        hasXInputController = false;
+        joystick = nullptr;
+        std::cout << "Continuing without a controller." << std::endl;
+        detectMonitorFromCursor(true);
+        createOverlay();
+        return;
+    }
+
+    if (currentMode == InputMode::Camera && availableControllers.size() >= 2) {
+        aggregateControllerButtons = true;
+        std::cout << "Camera mode: using all connected controllers." << std::endl;
+            // DirectInput cooperative levels require a real owner window.
+            createGUI();
+        for (const ControllerInfo& controller : availableControllers) {
+            if (controller.type == ControllerType::DirectInput) {
+                initializeDirectInputWithDevice(controller.guid);
+            }
+        }
+        hasXInputController = true;
+        detectMonitorFromCursor(true);
+        createOverlay();
+        return;
+    }
+
+    if (currentMode == InputMode::Camera && availableControllers.size() < 2) {
+        std::cout << "Camera mode controller choice:" << std::endl;
+        std::cout << "  [1] Use one controller" << std::endl;
+        std::cout << "  [2] Run without a controller" << std::endl;
+        std::cout << "Select controller option (1-2, ESC = no controller): ";
+        char cameraControllerChoice = _getch();
+        if (cameraControllerChoice == 27) cameraControllerChoice = '2';
+        std::cout << cameraControllerChoice << std::endl;
+        if (cameraControllerChoice == '2') {
+            noControllerMode = true;
+            hasXInputController = false;
+            joystick = nullptr;
+            std::cout << "Camera mode: running without a physical controller." << std::endl;
+            detectMonitorFromCursor(true);
+            createOverlay();
+            return;
+        }
     }
     
-    // Display controller selection menu
-    displayControllerMenu(availableControllers);
-    
-    // Get user selection
-    int selectedIndex = getControllerSelection(availableControllers.size());
+    // Use the first controller by default when there is exactly one.
+    int selectedIndex = 0;
+    if (availableControllers.size() > 1 && currentMode != InputMode::Camera) {
+        do {
+            displayControllerMenu(availableControllers);
+            selectedIndex = getControllerSelection(availableControllers.size());
+        } while (selectedIndex < 0); // ESC redisplays the menu instead of committing a fat-fingered pick
+    } else {
+        std::cout << "Auto-selecting controller: " << availableControllers[0].name << std::endl;
+    }
     
     if (selectedIndex >= 0 && selectedIndex < availableControllers.size()) {
         ControllerInfo selected = availableControllers[selectedIndex];
@@ -426,6 +492,17 @@ void ControllerMapper::initializeControllers() {
         } else {
             if (initializeDirectInputWithDevice(selected.guid)) {
                 std::cout << "Selected DirectInput controller: " << selected.name << std::endl;
+                std::cout << "Press M within the next 3 seconds to remap DirectInput buttons; otherwise startup continues." << std::endl;
+                for (int waitStep = 0; waitStep < 30; ++waitStep) {
+                    if (_kbhit()) {
+                        int k = _getch();
+                        if (k == 'm' || k == 'M') {
+                            mapDirectInputButtons(joystick);
+                            break;
+                        }
+                    }
+                    Sleep(100);
+                }
             } else {
                 logError("Failed to initialize selected controller!");
                 std::cerr << "Press any key to exit..." << std::endl;
@@ -501,6 +578,9 @@ int ControllerMapper::getControllerSelection(int maxControllers) {
     while (true) {
         if (_kbhit()) {
             int key = _getch();
+            if (key == 27) {
+                return -1; // ESC: let the caller redisplay the menu
+            }
             if (key >= '1' && key <= '9') {
                 int selection = key - '1';
                 if (selection < maxControllers) {
@@ -520,29 +600,77 @@ bool ControllerMapper::initializeDirectInputWithDevice(const GUID& deviceGuid) {
         }
     }
 
-    HRESULT hr = di->CreateDevice(deviceGuid, &joystick, nullptr);
+    LPDIRECTINPUTDEVICE8 device = nullptr;
+    HRESULT hr = di->CreateDevice(deviceGuid, &device, nullptr);
     if (FAILED(hr)) {
         return false;
     }
 
     // Set data format - use DIJOYSTATE2 for extended axes (includes sliders for DS4 touchpad)
-    hr = joystick->SetDataFormat(&c_dfDIJoystick2);
+    hr = device->SetDataFormat(&c_dfDIJoystick2);
     if (FAILED(hr)) {
         return false;
     }
 
     // Set cooperative level
-    hr = joystick->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+    hr = device->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
     if (FAILED(hr)) {
-        hr = joystick->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_FOREGROUND);
+        hr = device->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_FOREGROUND);
         if (FAILED(hr)) {
             return false;
         }
     }
 
     // Acquire the device
-    hr = joystick->Acquire();
-    return SUCCEEDED(hr);
+    hr = device->Acquire();
+    if (FAILED(hr)) {
+        device->Release();
+        return false;
+    }
+
+    if (aggregateControllerButtons) {
+        aggregateJoysticks.push_back(device);
+        if (!joystick) joystick = device;
+    } else {
+        joystick = device;
+    }
+    return true;
+}
+
+// Interactive DirectInput button mapping: prompts user to press a button for each role
+bool ControllerMapper::mapDirectInputButtons(LPDIRECTINPUTDEVICE8 device) {
+    if (!device) return false;
+    std::cout << "Starting interactive button mapping for DirectInput device..." << std::endl;
+    std::cout << "When prompted, press the physical button you want mapped to the role." << std::endl;
+
+    auto waitForButton = [&](const std::string& role) -> int {
+        std::cout << "Press button for: " << role << " (waiting...)" << std::endl;
+        while (true) {
+            DIJOYSTATE2 state;
+            HRESULT hr = device->GetDeviceState(sizeof(DIJOYSTATE2), &state);
+            if (SUCCEEDED(hr)) {
+                for (int i = 0; i < 128; ++i) {
+                    if (state.rgbButtons[i] & 0x80) {
+                        std::cout << "Captured button index: " << i << std::endl;
+                        // Debounce
+                        Sleep(300);
+                        return i;
+                    }
+                }
+            }
+            Sleep(20);
+        }
+    };
+
+    directL1Index = waitForButton("L1 (left shoulder)");
+    directR1Index = waitForButton("R1 (right shoulder)");
+    directL2Index = waitForButton("L2 (left trigger)");
+    directR2Index = waitForButton("R2 (right trigger)");
+    directL3Index = waitForButton("L3 (left stick press)");
+    directR3Index = waitForButton("R3 (right stick press)");
+
+    std::cout << "Mapping complete." << std::endl;
+    return true;
 }
 
 int ControllerMapper::calculateAlpha(double distance, bool touchActive, bool pointerLocked) {
@@ -1642,7 +1770,7 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         info += "\r\n";
     }
     
-    info += "Ctrl+Shift+` = Toggle | Ctrl+Alt+Shift+` = Restart\r\n";
+    info += "Ctrl+Shift+Q = Toggle | Ctrl+Alt+Shift+Q = Restart | Ctrl+Alt+Shift+W = Switch monitor\r\n";
 
     // Store debug info for overlay rendering
     debugText = info;
@@ -1657,7 +1785,7 @@ void ControllerMapper::logInfo(const std::string& message) {
 }
 
 void ControllerMapper::run() {
-    if (!hwnd || (!joystick && !hasXInputController)) {
+    if (!hwnd || (!joystick && !hasXInputController && !noControllerMode)) {
         std::cerr << "Not initialized!" << std::endl;
         return;
     }
@@ -1669,7 +1797,8 @@ void ControllerMapper::run() {
         GetAsyncKeyState(VK_CONTROL);
         GetAsyncKeyState(VK_SHIFT);
         GetAsyncKeyState(VK_MENU);
-        GetAsyncKeyState(VK_OEM_3);
+        GetAsyncKeyState('Q');
+        GetAsyncKeyState('W');
         Sleep(20);
     }
     
@@ -1679,7 +1808,8 @@ void ControllerMapper::run() {
         bool anyKeyHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || 
                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) || 
                           (GetAsyncKeyState(VK_MENU) & 0x8000) || 
-                          (GetAsyncKeyState(VK_OEM_3) & 0x8000);
+                          (GetAsyncKeyState('Q') & 0x8000) ||
+                          (GetAsyncKeyState('W') & 0x8000);
         
         if (!anyKeyHeld) break;
         
@@ -1700,14 +1830,23 @@ void ControllerMapper::run() {
     bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
     bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    bool backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+    bool qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
+    bool wDown = (GetAsyncKeyState('W') & 0x8000) != 0;
     
-    bool togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
-    bool restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+    bool togglePressed = ctrlDown && shiftDown && !altDown && qDown;
+    bool restartPressed = ctrlDown && shiftDown && altDown && qDown;
+    bool monitorSwitchPressed = ctrlDown && shiftDown && altDown && wDown;
     
     // Initialize prev states to CURRENT state to prevent first-frame trigger
     bool prevTogglePressed = togglePressed;
     bool prevRestartPressed = restartPressed;
+    bool prevMonitorSwitchPressed = monitorSwitchPressed;
+    bool prevCalibrationPressed = false;
+    bool prevCalibrationKeyPressed = false;
+    bool prevDpadUpPressed = false;
+    bool prevDpadDownPressed = false;
+    bool prevDpadLeftPressed = false;
+    bool prevDpadRightPressed = false;
 
     MSG msg = {};
     while (true) {
@@ -1725,14 +1864,19 @@ void ControllerMapper::run() {
         ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+        qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
+        wDown = (GetAsyncKeyState('W') & 0x8000) != 0;
         
-        togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
-        restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+        togglePressed = ctrlDown && shiftDown && !altDown && qDown;
+        restartPressed = ctrlDown && shiftDown && altDown && qDown;
+        monitorSwitchPressed = ctrlDown && shiftDown && altDown && wDown;
         
         // Toggle debug on key press (not hold)
         if (togglePressed && !prevTogglePressed) {
             showDebugInfo = !showDebugInfo;
+            if (currentMode == InputMode::Camera) {
+                sendCameraDebugState(showDebugInfo);
+            }
             std::cout << "Debug info " << (showDebugInfo ? "enabled" : "disabled") << std::endl;
             if (overlayHwnd) {
                 RedrawWindow(overlayHwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOFRAME);
@@ -1746,9 +1890,17 @@ void ControllerMapper::run() {
             PostQuitMessage(0);
             return;
         }
+
+        if (monitorSwitchPressed && !prevMonitorSwitchPressed) {
+            std::cout << "Switching overlay to the monitor under the cursor..." << std::endl;
+            detectMonitorFromCursor(true);
+        }
         
         prevTogglePressed = togglePressed;
         prevRestartPressed = restartPressed;
+        prevMonitorSwitchPressed = monitorSwitchPressed;
+
+        bool calibrationKeyPressed = (GetAsyncKeyState('C') & 0x8000) != 0;
 
         // Process controller (always, regardless of focus)
         bool controllerSuccess = false;
@@ -1758,9 +1910,51 @@ void ControllerMapper::run() {
         bool r2Pressed = false;
         bool l3Pressed = false;
         bool r3Pressed = false;
+        bool calibrationPressed = false;
+        bool dpadUpPressed = false;
+        bool dpadDownPressed = false;
+        bool dpadLeftPressed = false;
+        bool dpadRightPressed = false;
         double joyX = 0, joyY = 0, joyZ = 0, joyR = 0;
         
-        if (hasXInputController) {
+        if (aggregateControllerButtons) {
+            for (DWORD controllerIndex = 0; controllerIndex < XUSER_MAX_COUNT; ++controllerIndex) {
+                XINPUT_STATE state = {};
+                if (XInputGetState(controllerIndex, &state) == ERROR_SUCCESS) {
+                    controllerSuccess = true;
+                    l1Pressed = l1Pressed || ((state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0);
+                    r1Pressed = r1Pressed || ((state.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0);
+                    const WORD buttons = state.Gamepad.wButtons;
+                    dpadUpPressed = dpadUpPressed || ((buttons & XINPUT_GAMEPAD_DPAD_UP) != 0);
+                    dpadDownPressed = dpadDownPressed || ((buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+                    dpadLeftPressed = dpadLeftPressed || ((buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
+                    dpadRightPressed = dpadRightPressed || ((buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
+                    calibrationPressed = calibrationPressed || ((buttons & XINPUT_GAMEPAD_X) != 0);
+                }
+            }
+
+            for (LPDIRECTINPUTDEVICE8 device : aggregateJoysticks) {
+                if (!device) continue;
+                DIJOYSTATE2 state;
+                HRESULT hr = device->GetDeviceState(sizeof(DIJOYSTATE2), &state);
+                if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
+                    device->Unacquire();
+                    device->Acquire();
+                    continue;
+                }
+                if (SUCCEEDED(hr)) {
+                    controllerSuccess = true;
+                    l1Pressed = l1Pressed || ((state.rgbButtons[directL1Index] & 0x80) != 0);
+                    r1Pressed = r1Pressed || ((state.rgbButtons[directR1Index] & 0x80) != 0);
+                    const DWORD pov = state.rgdwPOV[0];
+                    dpadUpPressed = dpadUpPressed || pov == 0;
+                    dpadDownPressed = dpadDownPressed || pov == 18000;
+                    dpadLeftPressed = dpadLeftPressed || pov == 27000;
+                    dpadRightPressed = dpadRightPressed || pov == 9000;
+                    calibrationPressed = calibrationPressed || ((state.rgbButtons[2] & 0x80) != 0);
+                }
+            }
+        } else if (hasXInputController) {
             // Process XInput controller (Xbox controllers)
             DWORD result = XInputGetState(xInputControllerIndex, &xInputState);
             if (result == ERROR_SUCCESS) {
@@ -1769,6 +1963,12 @@ void ControllerMapper::run() {
                 // XInput button mapping: Left Shoulder = L1, Right Shoulder = R1
                 l1Pressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
                 r1Pressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
+                const WORD buttons = xInputState.Gamepad.wButtons;
+                dpadUpPressed = (buttons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+                dpadDownPressed = (buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+                dpadLeftPressed = (buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+                dpadRightPressed = (buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+                calibrationPressed = (buttons & XINPUT_GAMEPAD_X) != 0;
                 
                 // XInput trigger mapping: L2 = Left trigger, R2 = Right trigger
                 // Triggers are analog (0-255), threshold at 128 (50%) to determine press
@@ -1801,17 +2001,23 @@ void ControllerMapper::run() {
             if (SUCCEEDED(hr)) {
                 controllerSuccess = true;
                 
-                // DirectInput button mapping
-                l1Pressed = (state.rgbButtons[4] & 0x80) != 0;
-                r1Pressed = (state.rgbButtons[5] & 0x80) != 0;
-                
-                // DirectInput trigger mapping - use L2 and R2 buttons
-                l2Pressed = (state.rgbButtons[6] & 0x80) != 0;  // L2 button (button 6)
-                r2Pressed = (state.rgbButtons[7] & 0x80) != 0;  // R2 button (button 7)
-                
-                // DirectInput stick press mapping - use L3 and R3 buttons
-                l3Pressed = (state.rgbButtons[10] & 0x80) != 0;  // L3 button (button 10)
-                r3Pressed = (state.rgbButtons[11] & 0x80) != 0;  // R3 button (button 11)
+                // DirectInput button mapping (use configurable indices)
+                l1Pressed = (state.rgbButtons[directL1Index] & 0x80) != 0;
+                r1Pressed = (state.rgbButtons[directR1Index] & 0x80) != 0;
+                const DWORD pov = state.rgdwPOV[0];
+                dpadUpPressed = pov == 0;
+                dpadDownPressed = pov == 18000;
+                dpadLeftPressed = pov == 27000;
+                dpadRightPressed = pov == 9000;
+                calibrationPressed = (state.rgbButtons[2] & 0x80) != 0;
+
+                // DirectInput trigger mapping - use mapped indices for L2 and R2
+                l2Pressed = (state.rgbButtons[directL2Index] & 0x80) != 0;
+                r2Pressed = (state.rgbButtons[directR2Index] & 0x80) != 0;
+
+                // DirectInput stick press mapping - use mapped indices for L3 and R3
+                l3Pressed = (state.rgbButtons[directL3Index] & 0x80) != 0;
+                r3Pressed = (state.rgbButtons[directR3Index] & 0x80) != 0;
                 
                 
                 // DirectInput stick values
@@ -1821,7 +2027,63 @@ void ControllerMapper::run() {
                 joyR = 1.0 - (state.lRz / 32767.5);
             }
         }
+
+        if (currentMode == InputMode::Camera && cameraInputMode == CameraInputMode::DS4Led) {
+            auto sendCalibrationHoldTransition = [this](bool pressed, bool previous, const char* action) {
+                if (pressed != previous) {
+                    sendCameraControlCommand((std::string(action) + (pressed ? " 1" : " 0")).c_str());
+                }
+            };
+            sendCalibrationHoldTransition(dpadUpPressed, prevDpadUpPressed, "LED AMBIENT");
+            sendCalibrationHoldTransition(dpadLeftPressed, prevDpadLeftPressed, "LED LEFT");
+            sendCalibrationHoldTransition(dpadRightPressed, prevDpadRightPressed, "LED RIGHT");
+            if ((dpadDownPressed && !prevDpadDownPressed) ||
+                (calibrationPressed && !prevCalibrationPressed) ||
+                (calibrationKeyPressed && !prevCalibrationKeyPressed)) {
+                sendCameraControlCommand("CALIBRATE CIRCLE");
+            }
+        } else if (currentMode == InputMode::Camera &&
+                   ((dpadRightPressed && !prevDpadRightPressed) ||
+                    (calibrationPressed && !prevCalibrationPressed) ||
+                    (calibrationKeyPressed && !prevCalibrationKeyPressed))) {
+            sendCameraControlCommand("CALIBRATE CIRCLE");
+        }
+        prevCalibrationPressed = calibrationPressed;
+        prevCalibrationKeyPressed = calibrationKeyPressed;
+        prevDpadUpPressed = dpadUpPressed;
+        prevDpadDownPressed = dpadDownPressed;
+        prevDpadLeftPressed = dpadLeftPressed;
+        prevDpadRightPressed = dpadRightPressed;
         
+        // If external CV input is available, override controller values
+        {
+            std::lock_guard<std::mutex> lock(udpMutex);
+            if (useExternalInput) {
+                ULONGLONG nowMs = GetTickCount64();
+                if (externalLastPacketMs == 0 || (nowMs - externalLastPacketMs) > EXTERNAL_INPUT_TIMEOUT_MS) {
+                    // Mirror Python's per-frame reset semantics when tracking is gone.
+                    useExternalInput = false;
+                    externalSmoothingInitialized = false;
+                    externalLeftPressed = false;
+                    externalRightPressed = false;
+                    externalUsesControllerButtons = false;
+                }
+            }
+
+            if (useExternalInput) {
+                controllerSuccess = true;
+                if (!externalUsesControllerButtons) {
+                    l1Pressed = externalLeftPressed;
+                    r1Pressed = externalRightPressed;
+                }
+                // Map normalized [0..1] -> stick coordinates [-1..1]
+                joyX = externalLeftX * 2.0 - 1.0;
+                joyY = 1.0 - externalLeftY * 2.0;
+                joyZ = externalRightX * 2.0 - 1.0;
+                joyR = 1.0 - externalRightY * 2.0;
+            }
+        }
+
         if (controllerSuccess) {
             // Calculate angles
             double lAngle = calculateAngle(joyX, joyY);
@@ -1841,6 +2103,10 @@ void ControllerMapper::run() {
                     break;
                 case InputMode::Keyboard:
                     handleKeyboardControl(l1Pressed, r1Pressed, joyX, joyY, joyZ, joyR);
+                    break;
+                case InputMode::Camera:
+                    // Camera mode maps external CV input into touch pipeline
+                    handleCameraControl(l1Pressed, r1Pressed, joyX, joyY, joyZ, joyR);
                     break;
             }
             
@@ -1873,9 +2139,9 @@ void ControllerMapper::run() {
             }
         }
             
-        // Real-time monitor detection - check if cursor crossed monitor border
-        // This also gets cursor position which we'll use for debug overlay updates
-        POINT cursorPos = checkMonitorChange();
+        // Monitor changes are manual; this position is only used for debug rendering.
+        POINT cursorPos = {0, 0};
+        GetCursorPos(&cursorPos);
         
         // Check for mouse movement to update debug overlay visually
         if (showDebugInfo && (lastMousePos.x != cursorPos.x || lastMousePos.y != cursorPos.y)) {
@@ -1888,8 +2154,8 @@ void ControllerMapper::run() {
             lastMousePos = cursorPos;
         }
 
-        // Sleep based on refresh rate to match monitor
-        Sleep(updateIntervalMs);
+        // Camera packets arrive independently of the monitor refresh rate.
+        Sleep(currentMode == InputMode::Camera ? 1 : updateIntervalMs);
     }
 }
 
@@ -1920,4 +2186,5 @@ void ControllerMapper::cleanup() {
         mouseButtonPressed = false;
     }
 }
+
 

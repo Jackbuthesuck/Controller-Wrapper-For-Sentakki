@@ -2,6 +2,8 @@
 #define CONTROLLER_INPUT_H
 
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <dinput.h>
 #include <XInput.h>
@@ -11,7 +13,10 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <cstring>
 #include <conio.h>
+#include <atomic>
+#include <mutex>
 
 // C++/WinRT includes for UWP InputInjector (Touch mode)
 #include <winrt/Windows.Foundation.h>
@@ -24,6 +29,7 @@
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "windowsapp.lib")  // For UWP InputInjector
+#pragma comment(lib, "ws2_32.lib")
 
 using namespace winrt;
 using namespace Windows::UI::Input::Preview::Injection;
@@ -40,7 +46,20 @@ enum class ControllerType {
 enum class InputMode {
     Touch,      // Multi-touch input using UWP InputInjector (for Sentakki)
     Mouse,      // Mouse cursor control + left click
-    Keyboard    // Number keys 1-8 based on stick direction
+    Keyboard,   // Number keys 1-8 based on stick direction
+    Camera      // External camera-based input (via UDP)
+};
+
+enum class CameraInputMode {
+    Push,
+    Curl,
+    DS4Led
+};
+
+enum class ControllerSourceMode {
+    One,
+    None,
+    All
 };
 
 struct ControllerInfo {
@@ -69,6 +88,8 @@ private:
     bool hasXInputController;
     DWORD xInputControllerIndex;
     XINPUT_STATE xInputState;
+    bool aggregateControllerButtons;
+    std::vector<LPDIRECTINPUTDEVICE8> aggregateJoysticks;
     
     // ========== Overlay Visualization ==========
     double overlayLeftX, overlayLeftY;      // Left stick (-1.0 to 1.0)
@@ -113,6 +134,9 @@ private:
     
     // ========== Input Mode State ==========
     InputMode currentMode;  // Current operating mode (Touch/Mouse/Keyboard)
+    CameraInputMode cameraInputMode;
+    ControllerSourceMode controllerSourceMode;
+    int cameraIndex;
     
     // Touch mode state (UWP InputInjector)
     bool leftTouchActive;
@@ -146,6 +170,22 @@ private:
     bool touchActive[20];  // Whether each touch is active
     double touchX[20];     // X position of each touch (stick coordinates)
     double touchY[20];     // Y position of each touch (stick coordinates)
+
+    // DirectInput button mapping indices (defaults chosen to match common mappings)
+    int directL1Index = 4;
+    int directR1Index = 5;
+    int directL2Index = 6;
+    int directR2Index = 7;
+    int directL3Index = 10;
+    int directR3Index = 11;
+
+    // Interactive mapping helper for DirectInput devices
+    bool mapDirectInputButtons(LPDIRECTINPUTDEVICE8 device);
+
+    // When true, allow running the app without any physical controller connected.
+    // This lets Camera/UDP external input drive the modes, or lets the app run
+    // in a no-controller mode for testing overlays.
+    bool noControllerMode = false;
     
     // Mouse mode state
     bool mouseButtonPressed;
@@ -174,7 +214,7 @@ private:
 
 public:
     // ========== Constructor & Initialization ==========
-    ControllerMapper(InputMode mode = InputMode::Touch);
+    ControllerMapper(InputMode mode = InputMode::Touch, CameraInputMode cameraMode = CameraInputMode::Push, int cameraDeviceIndex = 0, ControllerSourceMode controllerSource = ControllerSourceMode::One);
     bool initialize();
     ~ControllerMapper();
     
@@ -189,7 +229,6 @@ private:
     void createGUI();
     void createOverlay();
     void detectMonitorFromCursor(bool verbose = false);
-    POINT checkMonitorChange();
     void updateRefreshRate();
     void updateOverlayPosition();
     
@@ -242,6 +281,7 @@ private:
     void handleTouchControl(bool l1, bool r1, bool l2, bool r2, bool l3, bool r3, double leftX, double leftY, double rightX, double rightY);
     void handleMouseControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY);
     void handleKeyboardControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY);
+    void handleCameraControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY);
     
     // ========== Touch Mode Methods (forward declarations) ==========
     // These are implemented in TouchMode.cpp
@@ -278,6 +318,32 @@ private:
     static inline bool g_prevAnyButtonPressed = false;
     static inline int g_buttonPressCounter = 0;
     static inline int g_lastPrintedPressCounter = -1;
+
+    // ========== External (CV) Input via UDP ==========
+    std::thread udpThread;
+    std::atomic<bool> udpRunning{false};
+    std::mutex udpMutex;
+    // External normalized coordinates [0..1]
+    double externalLeftX{0.0}, externalLeftY{0.0}, externalRightX{0.0}, externalRightY{0.0};
+    bool externalLeftPressed{false}, externalRightPressed{false};
+    bool externalUsesControllerButtons{false};
+    bool useExternalInput{false};
+    ULONGLONG externalLastPacketMs{0};
+    bool externalSmoothingInitialized{false};
+    double externalSmoothingAlpha{1.0};
+    static constexpr ULONGLONG EXTERNAL_INPUT_TIMEOUT_MS = 300;
+
+    // Start/stop UDP listener (port default 8765)
+    void startUDPListener(int port = 8765);
+    void stopUDPListener();
+
+    // Auto-launch Python camera sender when Camera mode is selected
+    PROCESS_INFORMATION cameraSenderProcess{};
+    bool cameraSenderRunning{false};
+    bool startCameraSenderProcess();
+    void stopCameraSenderProcess();
+    void sendCameraDebugState(bool enabled);
+    void sendCameraControlCommand(const char* message);
 };
 
 #endif // CONTROLLER_INPUT_H
