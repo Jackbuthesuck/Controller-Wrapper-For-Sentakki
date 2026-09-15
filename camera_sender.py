@@ -97,6 +97,19 @@ def _normalize_input_mode(value: Any) -> str:
     return value
 
 
+def _normalize_capture_format(value: Any) -> str:
+    if value is None:
+        return "auto"
+    if not isinstance(value, str):
+        raise RuntimeError("capture_format must be 'auto' or a four-character video format")
+    normalized = value.strip().upper()
+    if normalized in ("", "AUTO"):
+        return "auto"
+    if len(normalized) != 4:
+        raise RuntimeError("capture_format must be 'auto' or a four-character video format")
+    return normalized
+
+
 @dataclass(frozen=True)
 class SenderConfig:
     config_path: Path
@@ -118,6 +131,8 @@ class SenderConfig:
     fps: float
     width: int
     height: int
+    capture_format: str
+    flip_horizontal: bool
     led_jump_confirmations: int
     led_jump_match_distance: float
     allow_white_led_fallback: bool
@@ -131,6 +146,7 @@ class SenderConfig:
             raise RuntimeError("fps must be greater than zero")
         if self.width <= 0 or self.height <= 0:
             raise RuntimeError("width and height must be greater than zero")
+        _normalize_capture_format(self.capture_format)
         if self.max_hands <= 0:
             raise RuntimeError("max_hands must be greater than zero")
         if self.led_jump_confirmations <= 0:
@@ -192,6 +208,26 @@ def _build_argument_parser(config: dict[str, Any], config_path: Path) -> argpars
     parser.add_argument("--fps", type=float, default=config.get("fps", 60.0), help="Target send FPS")
     parser.add_argument("--width", type=int, default=config.get("width", 640), help="Requested camera width")
     parser.add_argument("--height", type=int, default=config.get("height", 480), help="Requested camera height")
+    parser.add_argument(
+        "--capture-format",
+        type=_normalize_capture_format,
+        default=_normalize_capture_format(config.get("capture_format", "MJPG")),
+        help="Requested camera format, such as MJPG, YUY2, NV12, H264, or auto",
+    )
+    flip_group = parser.add_mutually_exclusive_group()
+    flip_group.add_argument(
+        "--flip",
+        dest="flip_horizontal",
+        action="store_true",
+        default=bool(config.get("flip_horizontal", True)),
+        help="Mirror the captured frame horizontally",
+    )
+    flip_group.add_argument(
+        "--no-flip",
+        dest="flip_horizontal",
+        action="store_false",
+        help="Keep the capture's native horizontal orientation",
+    )
     parser.add_argument(
         "--led-jump-confirmations",
         type=int,
@@ -264,6 +300,8 @@ def parse_args(argv: Optional[list[str]] = None) -> SenderConfig:
         fps=namespace.fps,
         width=namespace.width,
         height=namespace.height,
+        capture_format=namespace.capture_format,
+        flip_horizontal=namespace.flip_horizontal,
         led_jump_confirmations=namespace.led_jump_confirmations,
         led_jump_match_distance=namespace.led_jump_match_distance,
         allow_white_led_fallback=namespace.allow_white_led_fallback,
@@ -621,6 +659,23 @@ def _open_screen_capture(screen_index: Optional[int], title_query: str = "scrcpy
     return capture, region
 
 
+def _fourcc_to_string(value: Any) -> str:
+    try:
+        code = int(round(float(value)))
+    except (TypeError, ValueError):
+        return "unknown"
+    if code <= 0:
+        return "unknown"
+    characters = "".join(chr((code >> (8 * offset)) & 0xFF) for offset in range(4))
+    if not all(32 <= ord(character) < 127 for character in characters):
+        return f"0x{code:08X}"
+    return characters
+
+
+def _prepare_frame(cv2: Any, frame: np.ndarray, flip_horizontal: bool) -> np.ndarray:
+    return cv2.flip(frame, 1) if flip_horizontal else frame
+
+
 class FrameSource:
     label = "CAPTURE"
 
@@ -641,17 +696,40 @@ class CameraFrameSource(FrameSource):
             raise RuntimeError(f"cannot open camera index {config.camera_index}")
 
         self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, config.width)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, config.height)
-        self.capture.set(cv2.CAP_PROP_FPS, config.fps)
+        if config.capture_format != "auto":
+            format_accepted = self.capture.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(*config.capture_format),
+            )
+            if not format_accepted:
+                print(f"Warning: camera did not accept requested format {config.capture_format}.")
+        for property_id, value, label in (
+            (cv2.CAP_PROP_FRAME_WIDTH, config.width, "width"),
+            (cv2.CAP_PROP_FRAME_HEIGHT, config.height, "height"),
+            (cv2.CAP_PROP_FPS, config.fps, "FPS"),
+        ):
+            if not self.capture.set(property_id, value):
+                print(f"Warning: camera did not accept requested {label} {value}.")
         negotiated_fps = self.capture.get(cv2.CAP_PROP_FPS)
         negotiated_width = int(self.capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         negotiated_height = int(self.capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        negotiated_format = _fourcc_to_string(self.capture.get(cv2.CAP_PROP_FOURCC))
         print(
             f"Camera stream: {negotiated_width}x{negotiated_height} at "
-            f"{negotiated_fps:.0f} FPS (target {config.fps:.0f})"
+            f"{negotiated_fps:.0f} FPS, {negotiated_format} "
+            f"(target {config.width}x{config.height} at {config.fps:.0f} FPS)"
         )
+        if config.capture_format != "auto" and negotiated_format not in ("unknown", config.capture_format):
+            print(
+                f"Warning: requested {config.capture_format}, but the driver negotiated "
+                f"{negotiated_format}."
+            )
+        if negotiated_width > 0 and negotiated_height > 0 and (
+            negotiated_width != config.width or negotiated_height != config.height
+        ):
+            print("Warning: camera resolution differs from the requested resolution.")
+        if negotiated_fps > 0 and negotiated_fps + 0.5 < config.fps:
+            print("Warning: camera FPS is below the requested target; measured FPS is authoritative.")
         self.label = f"CAMERA {config.camera_index}"
 
     def read(self) -> tuple[bool, np.ndarray]:
@@ -1467,7 +1545,7 @@ class CameraSenderApp:
                     continue
 
                 self.stats.record_capture()
-                frame = self.cv2.flip(frame, 1)
+                frame = _prepare_frame(self.cv2, frame, self.config.flip_horizontal)
                 now = time.perf_counter()
                 self.state.tracking.expire_lost(now, hand_lost_timeout)
                 hand_results: list[HandObservation] = []

@@ -14,6 +14,10 @@
   "fps": 60,
   "width": 640,
   "height": 480,
+  // MJPG, YUY2, NV12, H264
+  // Keep MJPG and mirroring for Webcam. HDMI cards may prefer auto/YUY2 and no flip.
+  "capture_format": "MJPG",
+  "flip_horizontal": true,
   "led_jump_confirmations": 2,
   "led_jump_match_distance": 0.12,
   "allow_white_led_fallback": false

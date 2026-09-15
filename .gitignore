@@ -6,6 +6,12 @@
 *.exp
 *.lib
 
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
 # Visual Studio
 .vs/
 *.vcxproj.user

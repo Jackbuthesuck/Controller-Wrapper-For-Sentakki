@@ -44,6 +44,18 @@ class CameraSenderTests(unittest.TestCase):
         self.assertLessEqual(distance, 0.5 + 1e-9)
         self.assertTrue(all(0.0 <= value <= 1.0 for value in calibrated))
 
+    def test_capture_format_and_orientation_helpers(self):
+        self.assertEqual(camera_sender._normalize_capture_format("yuy2"), "YUY2")
+        self.assertEqual(camera_sender._normalize_capture_format("auto"), "auto")
+        self.assertEqual(
+            camera_sender._fourcc_to_string(cv2.VideoWriter_fourcc(*"MJPG")),
+            "MJPG",
+        )
+        frame = np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8)
+        self.assertTrue(np.array_equal(camera_sender._prepare_frame(cv2, frame, False), frame))
+        flipped = camera_sender._prepare_frame(cv2, frame, True)
+        self.assertTrue(np.array_equal(flipped[0, 0], frame[0, 1]))
+
     def test_large_led_jump_requires_confirmation(self):
         tracker = camera_sender.LedTracker()
         self.assertTrue(tracker.accept("Left", (0.2, 0.5), 1.0, 2, 0.12))

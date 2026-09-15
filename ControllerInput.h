@@ -229,7 +229,6 @@ private:
     void createGUI();
     void createOverlay();
     void detectMonitorFromCursor(bool verbose = false);
-    POINT checkMonitorChange();
     void updateRefreshRate();
     void updateOverlayPosition();
     

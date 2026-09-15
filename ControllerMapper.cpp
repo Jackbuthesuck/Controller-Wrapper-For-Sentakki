@@ -252,22 +252,6 @@ void ControllerMapper::detectMonitorFromCursor(bool verbose) {
     }
 }
 
-POINT ControllerMapper::checkMonitorChange() {
-    // Get cursor position once and return it so it can be reused for debug updates
-    POINT cursorPos = {0, 0};
-    if (GetCursorPos(&cursorPos)) {
-        // Check if cursor is outside current monitor bounds
-        // Use strict bounds checking to avoid edge flickering
-        if (cursorPos.x < monitorLeft || cursorPos.x >= monitorRight ||
-            cursorPos.y < monitorTop || cursorPos.y >= monitorBottom) {
-            // Cursor crossed monitor border - detect new monitor immediately
-            // detectMonitorFromCursor will check if monitor actually changed before updating
-            detectMonitorFromCursor(false); // Silent detection
-        }
-    }
-    return cursorPos;
-}
-
 void ControllerMapper::updateRefreshRate() {
     // Get screen refresh rate from the detected monitor
     MONITORINFOEX monitorInfoEx = {};
@@ -1786,7 +1770,7 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         info += "\r\n";
     }
     
-    info += "Ctrl+Shift+` = Toggle | Ctrl+Alt+Shift+` = Restart\r\n";
+    info += "Ctrl+Shift+Q = Toggle | Ctrl+Alt+Shift+Q = Restart | Ctrl+Alt+Shift+W = Switch monitor\r\n";
 
     // Store debug info for overlay rendering
     debugText = info;
@@ -1814,6 +1798,7 @@ void ControllerMapper::run() {
         GetAsyncKeyState(VK_SHIFT);
         GetAsyncKeyState(VK_MENU);
         GetAsyncKeyState('Q');
+        GetAsyncKeyState('W');
         Sleep(20);
     }
     
@@ -1823,7 +1808,8 @@ void ControllerMapper::run() {
         bool anyKeyHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || 
                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) || 
                           (GetAsyncKeyState(VK_MENU) & 0x8000) || 
-                          (GetAsyncKeyState('Q') & 0x8000);
+                          (GetAsyncKeyState('Q') & 0x8000) ||
+                          (GetAsyncKeyState('W') & 0x8000);
         
         if (!anyKeyHeld) break;
         
@@ -1845,13 +1831,16 @@ void ControllerMapper::run() {
     bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
     bool qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
+    bool wDown = (GetAsyncKeyState('W') & 0x8000) != 0;
     
     bool togglePressed = ctrlDown && shiftDown && !altDown && qDown;
     bool restartPressed = ctrlDown && shiftDown && altDown && qDown;
+    bool monitorSwitchPressed = ctrlDown && shiftDown && altDown && wDown;
     
     // Initialize prev states to CURRENT state to prevent first-frame trigger
     bool prevTogglePressed = togglePressed;
     bool prevRestartPressed = restartPressed;
+    bool prevMonitorSwitchPressed = monitorSwitchPressed;
     bool prevCalibrationPressed = false;
     bool prevCalibrationKeyPressed = false;
     bool prevDpadUpPressed = false;
@@ -1876,9 +1865,11 @@ void ControllerMapper::run() {
         shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
         qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
+        wDown = (GetAsyncKeyState('W') & 0x8000) != 0;
         
         togglePressed = ctrlDown && shiftDown && !altDown && qDown;
         restartPressed = ctrlDown && shiftDown && altDown && qDown;
+        monitorSwitchPressed = ctrlDown && shiftDown && altDown && wDown;
         
         // Toggle debug on key press (not hold)
         if (togglePressed && !prevTogglePressed) {
@@ -1899,9 +1890,15 @@ void ControllerMapper::run() {
             PostQuitMessage(0);
             return;
         }
+
+        if (monitorSwitchPressed && !prevMonitorSwitchPressed) {
+            std::cout << "Switching overlay to the monitor under the cursor..." << std::endl;
+            detectMonitorFromCursor(true);
+        }
         
         prevTogglePressed = togglePressed;
         prevRestartPressed = restartPressed;
+        prevMonitorSwitchPressed = monitorSwitchPressed;
 
         bool calibrationKeyPressed = (GetAsyncKeyState('C') & 0x8000) != 0;
 
@@ -2142,9 +2139,9 @@ void ControllerMapper::run() {
             }
         }
             
-        // Real-time monitor detection - check if cursor crossed monitor border
-        // This also gets cursor position which we'll use for debug overlay updates
-        POINT cursorPos = checkMonitorChange();
+        // Monitor changes are manual; this position is only used for debug rendering.
+        POINT cursorPos = {0, 0};
+        GetCursorPos(&cursorPos);
         
         // Check for mouse movement to update debug overlay visually
         if (showDebugInfo && (lastMousePos.x != cursorPos.x || lastMousePos.y != cursorPos.y)) {
