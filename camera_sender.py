@@ -1,9 +1,12 @@
 import argparse
 import json
+import math
 import socket
 import time
 from pathlib import Path
 from urllib.request import urlretrieve
+
+import numpy as np
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("camera_config.json")
@@ -451,14 +454,126 @@ def _calibrate_position(norm_x, norm_y, left_edge, right_edge, center_y, frame_w
     return max(0.0, min(1.0, 0.5 + offset_x)), max(0.0, min(1.0, 0.5 + offset_y))
 
 
-def _detect_led_positions(cv2, frame, allow_white_fallback=False):
-    """Track the blue left and red right DS4 lightbars independently."""
+def _measure_led_ambient(cv2, frame):
+    """Estimate background brightness and saturation from the whole frame."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    return {
+        "value": float(np.median(hsv[:, :, 2])),
+        "saturation": float(np.median(hsv[:, :, 1])),
+    }
+
+
+def _sample_led_color(cv2, frame, center_x=0.5, center_y=0.5):
+    """Build a hue profile from the brightest, most saturated pixels at the crosshair."""
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    height, width = hsv.shape[:2]
+    radius = max(6, min(width, height) // 16)
+    sample_x = int(center_x * width)
+    sample_y = int(center_y * height)
+    x1 = max(0, sample_x - radius)
+    x2 = min(width, sample_x + radius + 1)
+    y1 = max(0, sample_y - radius)
+    y2 = min(height, sample_y + radius + 1)
+    pixels = hsv[y1:y2, x1:x2].reshape(-1, 3).astype(np.float32)
+    if pixels.size == 0:
+        return None
+
+    saturation_cutoff = np.percentile(pixels[:, 1], 50)
+    value_cutoff = np.percentile(pixels[:, 2], 60)
+    selected = pixels[(pixels[:, 1] >= max(20.0, saturation_cutoff)) & (pixels[:, 2] >= value_cutoff)]
+    if selected.size == 0:
+        selected = pixels
+
+    angles = selected[:, 0] * (math.pi / 90.0)
+    weights = np.maximum(1.0, selected[:, 1] * selected[:, 2])
+    hue = (math.atan2(float(np.sum(np.sin(angles) * weights)), float(np.sum(np.cos(angles) * weights))) * 90.0 / math.pi) % 180.0
+    return {
+        "hue": hue,
+        "saturation": float(np.percentile(selected[:, 1], 75)),
+        "value": float(np.percentile(selected[:, 2], 75)),
+    }
+
+
+def _average_led_profiles(profiles):
+    if not profiles:
+        return None
+    angles = np.asarray([profile["hue"] for profile in profiles], dtype=np.float32) * (math.pi / 90.0)
+    hue = (math.atan2(float(np.mean(np.sin(angles))), float(np.mean(np.cos(angles)))) * 90.0 / math.pi) % 180.0
+    return {
+        "hue": hue,
+        "saturation": float(np.median([profile["saturation"] for profile in profiles])),
+        "value": float(np.median([profile["value"] for profile in profiles])),
+    }
+
+
+def _average_led_ambient(samples):
+    if not samples:
+        return None
+    return {
+        "value": float(np.median([sample["value"] for sample in samples])),
+        "saturation": float(np.median([sample["saturation"] for sample in samples])),
+    }
+
+
+def _draw_led_crosshair(cv2, frame, label):
+    height, width = frame.shape[:2]
+    center = (width // 2, height // 2)
+    color = (0, 255, 255)
+    size = max(12, min(width, height) // 12)
+    cv2.line(frame, (center[0] - size, center[1]), (center[0] + size, center[1]), color, 2, cv2.LINE_AA)
+    cv2.line(frame, (center[0], center[1] - size), (center[0], center[1] + size), color, 2, cv2.LINE_AA)
+    cv2.circle(frame, center, size // 2, color, 1, cv2.LINE_AA)
+    cv2.putText(frame, f"RELEASE TO SET {label}", (max(10, center[0] - 130), center[1] - size - 12),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+
+def _detect_led_positions(cv2, frame, allow_white_fallback=False, ambient_profile=None, color_profiles=None):
+    """Track independently colored lightbars, using runtime samples when available."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     def find_color(hue_ranges, expected_x):
         mask = None
         for lower, upper in hue_ranges:
             part = cv2.inRange(hsv, lower, upper)
             mask = part if mask is None else cv2.bitwise_or(mask, part)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, None, iterations=3)
+        mask = cv2.dilate(mask, None, iterations=1)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            x, y, width, height = cv2.boundingRect(contour)
+            if area < 4 or width < 2 or height < 2:
+                continue
+            roi = hsv[y:y + height, x:x + width]
+            brightness = float(roi[:, :, 2].mean()) if roi.size else 0.0
+            saturation = float(roi[:, :, 1].mean()) if roi.size else 0.0
+            center_x = (x + width / 2.0) / frame.shape[1]
+            position_score = max(0.05, 1.0 - abs(center_x - expected_x) * 3.0)
+            score = area * (brightness / 255.0) * (saturation / 255.0) * position_score
+            candidates.append((score, contour))
+        if not candidates:
+            return None
+        contour = max(candidates, key=lambda item: item[0])[1]
+        x, y, width, height = cv2.boundingRect(contour)
+        return (
+            float((x + width / 2.0) / frame.shape[1]),
+            float((y + height / 2.0) / frame.shape[0]),
+            contour,
+        )
+
+    def find_profile(profile, expected_x):
+        hue_distance = np.abs(hsv[:, :, 0].astype(np.float32) - profile["hue"])
+        hue_distance = np.minimum(hue_distance, 180.0 - hue_distance)
+        ambient_value = ambient_profile["value"] if ambient_profile else 0.0
+        ambient_saturation = ambient_profile["saturation"] if ambient_profile else 0.0
+        saturation_floor = max(30.0, min(profile["saturation"] * 0.65, profile["saturation"] - 5.0))
+        saturation_floor = max(saturation_floor, min(ambient_saturation + 8.0, profile["saturation"] * 0.8))
+        value_floor = max(profile["value"] * 0.35, ambient_value + 8.0)
+        mask = (
+            (hue_distance <= 14.0)
+            & (hsv[:, :, 1] >= saturation_floor)
+            & (hsv[:, :, 2] >= value_floor)
+        ).astype(np.uint8) * 255
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, None, iterations=3)
         mask = cv2.dilate(mask, None, iterations=1)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -508,8 +623,10 @@ def _detect_led_positions(cv2, frame, allow_white_fallback=False):
             ))
         return sorted(bars, key=lambda bar: bar[3], reverse=True)
 
-    blue = find_color([((112, 150, 55), (130, 255, 255))], expected_x=0.25)
-    red = find_color(
+    left_profile = color_profiles.get("Left") if color_profiles else None
+    right_profile = color_profiles.get("Right") if color_profiles else None
+    blue = find_profile(left_profile, expected_x=0.25) if left_profile else find_color([((112, 150, 55), (130, 255, 255))], expected_x=0.25)
+    red = find_profile(right_profile, expected_x=0.75) if right_profile else find_color(
         [((0, 120, 55), (10, 255, 255)), ((170, 120, 55), (180, 255, 255))],
         expected_x=0.75,
     )
@@ -685,6 +802,12 @@ def main() -> int:
     calibration_rearm_required = False
     led_filtered = {"Left": None, "Right": None}
     led_jump_candidates = {"Left": None, "Right": None}
+    ambient_profile = None
+    led_color_profiles = {}
+    led_sampling_action = None
+    led_sample_release = None
+    led_ambient_samples = []
+    led_color_samples = {"Left": [], "Right": []}
 
     source = "DS4 LED + L1/R1" if args.input_mode == "ds4led" else f"hand {args.input_mode}"
     print(f"Sending {source} data to {args.host}:{args.port}")
@@ -700,9 +823,26 @@ def main() -> int:
                             debug_visible = True
                         elif command == "DEBUG 0":
                             debug_visible = False
-                        elif command == "CALIBRATE":
+                        elif command == "CALIBRATE" or command == "CALIBRATE CIRCLE":
                             calibration_armed = True
-                            print("Calibration armed. Show peace signs with both hands at neutral rest depth, then release.")
+                            if args.input_mode == "ds4led":
+                                print("DS4 LED circle calibration armed.")
+                            else:
+                                print("Calibration armed. Show peace signs with both hands at neutral rest depth, then release.")
+                        elif command.startswith("LED "):
+                            parts = command.split()
+                            if len(parts) == 3 and parts[2] in ("0", "1") and parts[1] in ("AMBIENT", "LEFT", "RIGHT"):
+                                action = parts[1].lower()
+                                if parts[2] == "1":
+                                    led_sampling_action = action
+                                    led_sample_release = None
+                                    led_ambient_samples.clear()
+                                    led_color_samples["Left"].clear()
+                                    led_color_samples["Right"].clear()
+                                    print(f"LED {action} sampling armed. Hold the crosshair over the target, then release.")
+                                elif led_sampling_action == action:
+                                    led_sample_release = action
+                                    led_sampling_action = None
                 except BlockingIOError:
                     pass
 
@@ -729,6 +869,37 @@ def main() -> int:
 
             frame = cv2.flip(frame, 1)
             now = time.perf_counter()
+            if args.input_mode == "ds4led":
+                if led_sampling_action == "ambient":
+                    led_ambient_samples.append(_measure_led_ambient(cv2, frame))
+                elif led_sampling_action in ("left", "right"):
+                    sample = _sample_led_color(cv2, frame)
+                    if sample is not None:
+                        led_color_samples["Left" if led_sampling_action == "left" else "Right"].append(sample)
+
+                if led_sample_release is not None:
+                    if led_sample_release == "ambient":
+                        if not led_ambient_samples:
+                            led_ambient_samples.append(_measure_led_ambient(cv2, frame))
+                        ambient_profile = _average_led_ambient(led_ambient_samples)
+                        print(f"LED ambient set: value {ambient_profile['value']:.0f}, saturation {ambient_profile['saturation']:.0f}.")
+                    else:
+                        hand_label = "Left" if led_sample_release == "left" else "Right"
+                        samples = led_color_samples[hand_label]
+                        if not samples:
+                            sample = _sample_led_color(cv2, frame)
+                            if sample is not None:
+                                samples.append(sample)
+                        profile = _average_led_profiles(samples)
+                        if profile is not None:
+                            led_color_profiles[hand_label] = profile
+                            print(f"LED {led_sample_release} color set: hue {profile['hue']:.1f}, saturation {profile['saturation']:.0f}, value {profile['value']:.0f}.")
+                        else:
+                            print(f"LED {led_sample_release} color sample failed; keep the crosshair over the lightbar and try again.")
+                    led_sample_release = None
+                    led_ambient_samples.clear()
+                    led_color_samples["Left"].clear()
+                    led_color_samples["Right"].clear()
             for hand_label in ("Left", "Right"):
                 if now - last_seen[hand_label] > hand_lost_timeout:
                     if hand_label == "Left":
@@ -759,6 +930,8 @@ def main() -> int:
                     cv2,
                     frame,
                     allow_white_fallback=args.allow_white_led_fallback,
+                    ambient_profile=ambient_profile,
+                    color_profiles=led_color_profiles,
                 )
 
                 if calibration_armed and led_positions[0] is not None and led_positions[1] is not None:
@@ -978,6 +1151,15 @@ def main() -> int:
                     else:
                         calibration_status = "CALIBRATED" if calibration_left_edge is not None else "NOT CALIBRATED"
                     cv2.putText(frame, f"Mode: {args.input_mode} | Circle: {calibration_status}", (10, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255) if calibration_left_edge is not None else (180, 180, 180), 1)
+                    if args.input_mode == "ds4led" and led_sampling_action:
+                        _draw_led_crosshair(cv2, frame, led_sampling_action.upper())
+                    if args.input_mode == "ds4led":
+                        profile_status = (
+                            f"LED profiles A:{'Y' if ambient_profile else 'N'} "
+                            f"L:{'Y' if 'Left' in led_color_profiles else 'N'} "
+                            f"R:{'Y' if 'Right' in led_color_profiles else 'N'}"
+                        )
+                        cv2.putText(frame, profile_status, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                 cv2.imshow("Camera Sender", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("c"):

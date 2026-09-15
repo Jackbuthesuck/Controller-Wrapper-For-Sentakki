@@ -1854,6 +1854,10 @@ void ControllerMapper::run() {
     bool prevRestartPressed = restartPressed;
     bool prevCalibrationPressed = false;
     bool prevCalibrationKeyPressed = false;
+    bool prevDpadUpPressed = false;
+    bool prevDpadDownPressed = false;
+    bool prevDpadLeftPressed = false;
+    bool prevDpadRightPressed = false;
 
     MSG msg = {};
     while (true) {
@@ -1910,6 +1914,10 @@ void ControllerMapper::run() {
         bool l3Pressed = false;
         bool r3Pressed = false;
         bool calibrationPressed = false;
+        bool dpadUpPressed = false;
+        bool dpadDownPressed = false;
+        bool dpadLeftPressed = false;
+        bool dpadRightPressed = false;
         double joyX = 0, joyY = 0, joyZ = 0, joyR = 0;
         
         if (aggregateControllerButtons) {
@@ -1919,8 +1927,12 @@ void ControllerMapper::run() {
                     controllerSuccess = true;
                     l1Pressed = l1Pressed || ((state.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0);
                     r1Pressed = r1Pressed || ((state.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0);
-                    calibrationPressed = calibrationPressed ||
-                        ((state.Gamepad.wButtons & (XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_X)) != 0);
+                    const WORD buttons = state.Gamepad.wButtons;
+                    dpadUpPressed = dpadUpPressed || ((buttons & XINPUT_GAMEPAD_DPAD_UP) != 0);
+                    dpadDownPressed = dpadDownPressed || ((buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+                    dpadLeftPressed = dpadLeftPressed || ((buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
+                    dpadRightPressed = dpadRightPressed || ((buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
+                    calibrationPressed = calibrationPressed || ((buttons & XINPUT_GAMEPAD_X) != 0);
                 }
             }
 
@@ -1937,9 +1949,12 @@ void ControllerMapper::run() {
                     controllerSuccess = true;
                     l1Pressed = l1Pressed || ((state.rgbButtons[directL1Index] & 0x80) != 0);
                     r1Pressed = r1Pressed || ((state.rgbButtons[directR1Index] & 0x80) != 0);
-                    calibrationPressed = calibrationPressed ||
-                        ((state.rgbButtons[2] & 0x80) != 0) ||
-                        (state.rgdwPOV[0] == 9000);
+                    const DWORD pov = state.rgdwPOV[0];
+                    dpadUpPressed = dpadUpPressed || pov == 0;
+                    dpadDownPressed = dpadDownPressed || pov == 18000;
+                    dpadLeftPressed = dpadLeftPressed || pov == 27000;
+                    dpadRightPressed = dpadRightPressed || pov == 9000;
+                    calibrationPressed = calibrationPressed || ((state.rgbButtons[2] & 0x80) != 0);
                 }
             }
         } else if (hasXInputController) {
@@ -1951,8 +1966,12 @@ void ControllerMapper::run() {
                 // XInput button mapping: Left Shoulder = L1, Right Shoulder = R1
                 l1Pressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
                 r1Pressed = (xInputState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
-                calibrationPressed = (xInputState.Gamepad.wButtons &
-                    (XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_X)) != 0;
+                const WORD buttons = xInputState.Gamepad.wButtons;
+                dpadUpPressed = (buttons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+                dpadDownPressed = (buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+                dpadLeftPressed = (buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+                dpadRightPressed = (buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+                calibrationPressed = (buttons & XINPUT_GAMEPAD_X) != 0;
                 
                 // XInput trigger mapping: L2 = Left trigger, R2 = Right trigger
                 // Triggers are analog (0-255), threshold at 128 (50%) to determine press
@@ -1988,7 +2007,12 @@ void ControllerMapper::run() {
                 // DirectInput button mapping (use configurable indices)
                 l1Pressed = (state.rgbButtons[directL1Index] & 0x80) != 0;
                 r1Pressed = (state.rgbButtons[directR1Index] & 0x80) != 0;
-                calibrationPressed = (state.rgbButtons[2] & 0x80) != 0 || state.rgdwPOV[0] == 9000;
+                const DWORD pov = state.rgdwPOV[0];
+                dpadUpPressed = pov == 0;
+                dpadDownPressed = pov == 18000;
+                dpadLeftPressed = pov == 27000;
+                dpadRightPressed = pov == 9000;
+                calibrationPressed = (state.rgbButtons[2] & 0x80) != 0;
 
                 // DirectInput trigger mapping - use mapped indices for L2 and R2
                 l2Pressed = (state.rgbButtons[directL2Index] & 0x80) != 0;
@@ -2007,13 +2031,32 @@ void ControllerMapper::run() {
             }
         }
 
-        if (currentMode == InputMode::Camera &&
-            ((calibrationPressed && !prevCalibrationPressed) ||
-             (calibrationKeyPressed && !prevCalibrationKeyPressed))) {
-            sendCameraCalibrationCommand();
+        if (currentMode == InputMode::Camera && cameraInputMode == CameraInputMode::DS4Led) {
+            auto sendCalibrationHoldTransition = [this](bool pressed, bool previous, const char* action) {
+                if (pressed != previous) {
+                    sendCameraControlCommand((std::string(action) + (pressed ? " 1" : " 0")).c_str());
+                }
+            };
+            sendCalibrationHoldTransition(dpadUpPressed, prevDpadUpPressed, "LED AMBIENT");
+            sendCalibrationHoldTransition(dpadLeftPressed, prevDpadLeftPressed, "LED LEFT");
+            sendCalibrationHoldTransition(dpadRightPressed, prevDpadRightPressed, "LED RIGHT");
+            if ((dpadDownPressed && !prevDpadDownPressed) ||
+                (calibrationPressed && !prevCalibrationPressed) ||
+                (calibrationKeyPressed && !prevCalibrationKeyPressed)) {
+                sendCameraControlCommand("CALIBRATE CIRCLE");
+            }
+        } else if (currentMode == InputMode::Camera &&
+                   ((dpadRightPressed && !prevDpadRightPressed) ||
+                    (calibrationPressed && !prevCalibrationPressed) ||
+                    (calibrationKeyPressed && !prevCalibrationKeyPressed))) {
+            sendCameraControlCommand("CALIBRATE CIRCLE");
         }
         prevCalibrationPressed = calibrationPressed;
         prevCalibrationKeyPressed = calibrationKeyPressed;
+        prevDpadUpPressed = dpadUpPressed;
+        prevDpadDownPressed = dpadDownPressed;
+        prevDpadLeftPressed = dpadLeftPressed;
+        prevDpadRightPressed = dpadRightPressed;
         
         // If external CV input is available, override controller values
         {

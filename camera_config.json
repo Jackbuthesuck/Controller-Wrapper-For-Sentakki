@@ -1,12 +1,13 @@
 {
-  // Set true to skip the native menus during debugging.
-  "auto_start": true,
-  // 1=camera, 2=touch, 3=keyboard, 4=mouse.
+  // 0=interactive menus, 1=skip menus and auto-start for debugging.
+  "auto_start": 0,
+  // 0=show the mode menu, 1=camera, 2=touch, 3=keyboard, 4=mouse.
   "startup_mode": 1,
-  // 1=DS4 LED, 2=push, 3=open hand.
+  // 0=show the camera-input menu, 1=DS4 LED, 2=push, 3=open hand.
   "input_mode": 2,
-  // 1=webcam, 2=scrcpy window, 3=scrcpy monitor.
-  "camera_source": 1,
+  // 0=show the camera-source menu, 1=webcam, 2=scrcpy window, 3=scrcpy monitor.
+  "camera_source": 0,
+  // 0=show camera indexs, 1-9=use 0 first to see indexes.
   "camera_index": 0,
   "preview": true,
   "auto_download_model": true,

@@ -171,7 +171,7 @@ void ControllerMapper::sendCameraDebugState(bool enabled) {
     closesocket(sock);
 }
 
-void ControllerMapper::sendCameraCalibrationCommand() {
+void ControllerMapper::sendCameraControlCommand(const char* message) {
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) return;
 
@@ -179,11 +179,10 @@ void ControllerMapper::sendCameraCalibrationCommand() {
     destination.sin_family = AF_INET;
     destination.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     destination.sin_port = htons(8766);
-    const char* message = "CALIBRATE";
     sendto(sock, message, static_cast<int>(strlen(message)), 0,
            reinterpret_cast<const sockaddr*>(&destination), sizeof(destination));
     closesocket(sock);
-    logInfo("Calibration command sent to camera sender.");
+    logInfo(std::string("Camera command sent: ") + message);
 }
 
 void ControllerMapper::startUDPListener(int port) {

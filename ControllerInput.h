@@ -344,7 +344,7 @@ private:
     bool startCameraSenderProcess();
     void stopCameraSenderProcess();
     void sendCameraDebugState(bool enabled);
-    void sendCameraCalibrationCommand();
+    void sendCameraControlCommand(const char* message);
 };
 
 #endif // CONTROLLER_INPUT_H
