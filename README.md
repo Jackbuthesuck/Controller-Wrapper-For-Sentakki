@@ -1,6 +1,6 @@
-# Controller Input Mapper
+# Controller Wrapper For Sentakki
 
-Controller Input Mapper turns controller, camera, and hand-tracking input into touch, mouse, or keyboard controls for Sentakki and other compatible applications.
+Controller Wrapper For Sentakki turns controller, camera, and hand-tracking input into touch, mouse, or keyboard controls for Sentakki and other compatible applications.
 
 ## Features
 
