@@ -5,12 +5,8 @@ import socket
 import time
 from pathlib import Path
 from urllib.request import urlretrieve
-
 import numpy as np
-
-
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("camera_config.json")
-
 
 def _strip_json_comments(text):
     result = []

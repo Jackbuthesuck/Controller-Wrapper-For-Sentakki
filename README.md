@@ -67,8 +67,8 @@ In DS4 LED mode, the detector starts with blue/red defaults, then can learn the 
 Stand at the same distance you expect to use during play. Select `DS4 LED + L1/R1` in `ControllerInput.exe`; it starts the sender automatically. Calibrate while both lightbars are visible. The preview should show both detected markers and report capture/send rates near the requested 60 FPS. If the rates are low, reduce camera resolution or close other camera-using applications before changing detection settings.
 
 **Shortcuts:**
-- `Ctrl+Shift+~` → Toggle debug info, Will also hide the touch IDs on the overlay
-- `Ctrl+Alt+Shift+~` → Restart
+- `Ctrl+Shift+Q` → Toggle debug info, Will also hide the touch IDs on the overlay
+- `Ctrl+Alt+Shift+Q` → Restart
 
 ---
 

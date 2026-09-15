@@ -7,7 +7,7 @@
   "input_mode": 2,
   // 0=show the camera-source menu, 1=webcam, 2=scrcpy window, 3=scrcpy monitor.
   "camera_source": 0,
-  // 0=show camera indexs, 1-9=use 0 first to see indexes.
+  // Used when camera_source=1: 0 is the first camera; -1 lists cameras and prompts.
   "camera_index": 0,
   "preview": true,
   "auto_download_model": true,

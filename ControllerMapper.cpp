@@ -1813,7 +1813,7 @@ void ControllerMapper::run() {
         GetAsyncKeyState(VK_CONTROL);
         GetAsyncKeyState(VK_SHIFT);
         GetAsyncKeyState(VK_MENU);
-        GetAsyncKeyState(VK_OEM_3);
+        GetAsyncKeyState('Q');
         Sleep(20);
     }
     
@@ -1823,7 +1823,7 @@ void ControllerMapper::run() {
         bool anyKeyHeld = (GetAsyncKeyState(VK_CONTROL) & 0x8000) || 
                           (GetAsyncKeyState(VK_SHIFT) & 0x8000) || 
                           (GetAsyncKeyState(VK_MENU) & 0x8000) || 
-                          (GetAsyncKeyState(VK_OEM_3) & 0x8000);
+                          (GetAsyncKeyState('Q') & 0x8000);
         
         if (!anyKeyHeld) break;
         
@@ -1844,10 +1844,10 @@ void ControllerMapper::run() {
     bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
     bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
     bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-    bool backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+    bool qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
     
-    bool togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
-    bool restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+    bool togglePressed = ctrlDown && shiftDown && !altDown && qDown;
+    bool restartPressed = ctrlDown && shiftDown && altDown && qDown;
     
     // Initialize prev states to CURRENT state to prevent first-frame trigger
     bool prevTogglePressed = togglePressed;
@@ -1875,10 +1875,10 @@ void ControllerMapper::run() {
         ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
         shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
         altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-        backtickDown = (GetAsyncKeyState(VK_OEM_3) & 0x8000) != 0;
+        qDown = (GetAsyncKeyState('Q') & 0x8000) != 0;
         
-        togglePressed = ctrlDown && shiftDown && !altDown && backtickDown;
-        restartPressed = ctrlDown && shiftDown && altDown && backtickDown;
+        togglePressed = ctrlDown && shiftDown && !altDown && qDown;
+        restartPressed = ctrlDown && shiftDown && altDown && qDown;
         
         // Toggle debug on key press (not hold)
         if (togglePressed && !prevTogglePressed) {
