@@ -157,6 +157,7 @@
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="ControllerInput.manifest" />
+    <None Include="requirements.txt" />
     <None Include="camera_config.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

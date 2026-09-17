@@ -482,15 +482,19 @@ def _find_cameras(cv2: Any, maximum: int = 10) -> list[dict[str, Any]]:
     try:
         from cv2_enumerate_cameras import enumerate_cameras
 
-        available = []
-        for camera in enumerate_cameras():
-            if 0 <= camera.index < maximum:
-                available.append({
+        # Enumerate the same backend used by CameraFrameSource so the returned
+        # indices are the ordinary 0-based OpenCV camera indices.
+        for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF):
+            available = [
+                {
                     "index": camera.index,
                     "name": camera.name or f"Camera {camera.index}",
-                })
-        if available:
-            return sorted(available, key=lambda item: item["index"])
+                    "backend": camera.backend,
+                }
+                for camera in enumerate_cameras(backend)
+            ][:maximum]
+            if available:
+                return available
     except Exception:
         pass
 
@@ -507,7 +511,11 @@ def _find_cameras(cv2: Any, maximum: int = 10) -> list[dict[str, Any]]:
                 if fps > 0:
                     description += f" @ {fps:.0f} FPS"
                 description += ")"
-            available.append({"index": camera_index, "name": description})
+            available.append({
+                "index": camera_index,
+                "name": description,
+                "backend": cv2.CAP_DSHOW,
+            })
         camera.release()
     return available
 
@@ -519,11 +527,11 @@ def _camera_choice_key(position: int, total: int) -> str:
     return "0" if position == 9 else str(position + 1)
 
 
-def _choose_camera(camera_devices: list[dict[str, Any]]) -> int:
+def _choose_camera(camera_devices: list[dict[str, Any]]) -> dict[str, Any]:
     if len(camera_devices) == 1:
         camera = camera_devices[0]
         print(f"Using the only camera: {camera['name']}")
-        return camera["index"]
+        return camera
 
     print("Available cameras (press a number to select):")
     for position, camera in enumerate(camera_devices):
@@ -540,7 +548,7 @@ def _choose_camera(camera_devices: list[dict[str, Any]]) -> int:
             if key == _camera_choice_key(position, len(camera_devices)):
                 print(key)
                 print(f"Selected: {camera['name']}")
-                return camera["index"]
+                return camera
 
 
 def _open_scrcpy_capture(title_query: str) -> tuple[Any, dict[str, int]]:
@@ -687,10 +695,10 @@ class FrameSource:
 
 
 class CameraFrameSource(FrameSource):
-    def __init__(self, cv2: Any, config: SenderConfig) -> None:
+    def __init__(self, cv2: Any, config: SenderConfig, backend: Optional[int] = None) -> None:
         self.cv2 = cv2
         self.camera_index = config.camera_index
-        self.capture = cv2.VideoCapture(config.camera_index, cv2.CAP_DSHOW)
+        self.capture = cv2.VideoCapture(config.camera_index, backend or cv2.CAP_DSHOW)
         if not self.capture.isOpened():
             self.capture.release()
             raise RuntimeError(f"cannot open camera index {config.camera_index}")
@@ -764,13 +772,16 @@ def _create_frame_source(cv2: Any, config: SenderConfig) -> FrameSource:
         return MssFrameSource(cv2, capture, region, "SCRCPY WINDOW")
 
     camera_index = config.camera_index
+    camera_backend: Optional[int] = None
     if camera_index < 0:
         available_cameras = _find_cameras(cv2)
         if not available_cameras:
             raise RuntimeError("no cameras found")
-        camera_index = _choose_camera(available_cameras)
+        selected_camera = _choose_camera(available_cameras)
+        camera_index = selected_camera["index"]
+        camera_backend = selected_camera.get("backend")
         config = SenderConfig(**{**config.__dict__, "camera_index": camera_index})
-    return CameraFrameSource(cv2, config)
+    return CameraFrameSource(cv2, config, camera_backend)
 
 
 # Geometry and LED detection

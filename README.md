@@ -45,7 +45,7 @@ For DS4 lightbar tracking:
 
 4. Choose an input mode and follow the on-screen prompts.
 
-The native application starts `camera_sender.py` automatically when Camera Mode is selected. The sender reads `camera_config.json` from the same directory.
+The native application starts `camera_sender.py` automatically when Camera Mode is selected. Debug builds use the repository-root `camera_config.json`; Release builds use the copy beside the executable. Standalone sender runs use the config beside `camera_sender.py` unless `--config` is provided.
 
 ## Sentakki Setup
 
@@ -135,7 +135,15 @@ Other useful settings include `preview`, `fps`, `width`, `height`, `capture_form
 `flip_horizontal`, `led_jump_confirmations`, `led_jump_match_distance`, and
 `allow_white_led_fallback`.
 
-With `auto_start` enabled, setting an individual choice to `0` leaves only that choice interactive. Use `camera_index: -1` to list available cameras and select one interactively.
+With `auto_start` enabled, setting an individual choice to `0` leaves only that choice interactive. Use `camera_index: -1` to list available cameras and select one interactively. The list uses `cv2-enumerate-cameras` and displays Windows device names; the selected index is the ordinary index for the backend shown by the enumerator.
+
+To list camera names without starting the native wrapper:
+
+```powershell
+python camera_sender.py --list-cameras
+```
+
+Install the dependencies first with `python -m pip install -r requirements.txt`. If `cv2-enumerate-cameras` is unavailable, the sender falls back to generic OpenCV camera probing and can only display names such as `Camera 0`.
 
 ### Webcam Sources
 
