@@ -131,9 +131,43 @@ The startup choices use numeric menu values:
 - `camera_source`: `0` interactive, `1` webcam, `2` scrcpy window, `3` scrcpy monitor
 - `camera_index`: webcam index, or `-1` to list cameras and choose interactively
 
-Other useful settings include `preview`, `fps`, `width`, `height`, `capture_format`,
+Other useful settings include `preview`, `fps`, `width`, `height`, `tracking_width`,
+`tracking_height`, `capture_format`,
 `flip_horizontal`, `led_jump_confirmations`, `led_jump_match_distance`, and
-`allow_white_led_fallback`.
+`led_size_smoothing`, `allow_white_led_fallback`.
+
+LED detection can use either HSV or RGB thresholds:
+
+```json
+"led_color_space": "hsv",
+"left_led_color": {
+	"hue": 60,
+  "hue_tolerance": 18,
+  "min_saturation": 100,
+  "min_value": 35,
+	"color": [0, 255, 0],
+  "tolerance": 80
+},
+"right_led_color": {
+  "hue": 120,
+  "hue_tolerance": 18,
+  "min_saturation": 150,
+  "min_value": 55,
+  "color": [0, 0, 255],
+  "tolerance": 80
+}
+```
+
+HSV uses `hue`, `hue_tolerance`, `min_saturation`, and `min_value`. The included
+testing defaults are green on the left and blue on the right. RGB uses the
+8-bit `[red, green, blue]` `color`, `tolerance`, and `min_value`. To use DS4Windows-style
+RGB values, set `led_color_space` to `"rgb"`; runtime LED color sampling is intended
+for HSV mode.
+
+For DS4 LED mode, `led_size_smoothing` controls how quickly the preview blob follows
+changes in the detected lightbar size. Lower values reduce visible pulsing; `0.2` is
+a good starting point. Runtime color samples override the defaults, which assume red
+on the left and blue on the right.
 
 With `auto_start` enabled, setting an individual choice to `0` leaves only that choice interactive. Use `camera_index: -1` to list available cameras and select one interactively. The list uses `cv2-enumerate-cameras` and displays Windows device names; the selected index is the ordinary index for the backend shown by the enumerator.
 
@@ -158,6 +192,17 @@ For a typical webcam, start with the resolution and format supported by the devi
 ```
 
 If the image appears mirrored, change `flip_horizontal`. The sender prints the negotiated resolution, FPS, and pixel format at startup. The measured capture and send FPS are more reliable than the requested camera FPS.
+
+For hand modes, `tracking_width` and `tracking_height` control only the frame sent to
+MediaPipe. The camera and preview can remain at a higher resolution. The default
+`640x360` tracking frame reduces inference cost while preserving two-hand tracking;
+`max_hands` remains `2`.
+
+MediaPipe Pose/body tracking is not enabled by default. It could provide torso and arm
+context, but it would add another model and would not restore hand landmarks that are
+lost because the hand is too dark or blurred. Improving lighting, exposure, and hand
+contrast is usually more effective; pose tracking can be considered later as a fallback
+for predicting a missing hand position.
 
 ### HDMI Capture Devices
 

@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import socket
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,14 @@ from typing import Any, Optional
 from urllib.request import urlretrieve
 
 import numpy as np
+
+
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("camera_config.json")
@@ -110,6 +119,23 @@ def _normalize_capture_format(value: Any) -> str:
     return normalized
 
 
+def _normalize_led_color_space(value: Any) -> str:
+    normalized = str(value).strip().lower()
+    if normalized not in ("hsv", "rgb"):
+        raise RuntimeError("led_color_space must be 'hsv' or 'rgb'")
+    return normalized
+
+
+def _led_color_config(value: Any, default: dict[str, Any]) -> dict[str, Any]:
+    if value is None:
+        return default.copy()
+    if not isinstance(value, dict):
+        raise RuntimeError("LED color settings must be JSON objects")
+    result = default.copy()
+    result.update(value)
+    return result
+
+
 @dataclass(frozen=True)
 class SenderConfig:
     config_path: Path
@@ -131,10 +157,16 @@ class SenderConfig:
     fps: float
     width: int
     height: int
+    tracking_width: int
+    tracking_height: int
     capture_format: str
     flip_horizontal: bool
     led_jump_confirmations: int
     led_jump_match_distance: float
+    led_size_smoothing: float
+    led_color_space: str
+    left_led_color: dict[str, Any]
+    right_led_color: dict[str, Any]
     allow_white_led_fallback: bool
     log: bool
     log_interval: float
@@ -146,6 +178,8 @@ class SenderConfig:
             raise RuntimeError("fps must be greater than zero")
         if self.width <= 0 or self.height <= 0:
             raise RuntimeError("width and height must be greater than zero")
+        if self.tracking_width <= 0 or self.tracking_height <= 0:
+            raise RuntimeError("tracking_width and tracking_height must be greater than zero")
         _normalize_capture_format(self.capture_format)
         if self.max_hands <= 0:
             raise RuntimeError("max_hands must be greater than zero")
@@ -153,6 +187,9 @@ class SenderConfig:
             raise RuntimeError("led_jump_confirmations must be greater than zero")
         if self.led_jump_match_distance <= 0:
             raise RuntimeError("led_jump_match_distance must be greater than zero")
+        if self.led_size_smoothing <= 0 or self.led_size_smoothing > 1:
+            raise RuntimeError("led_size_smoothing must be greater than zero and no greater than one")
+        _normalize_led_color_space(self.led_color_space)
         if self.push_threshold < 0 or self.push_release_threshold < 0:
             raise RuntimeError("push thresholds cannot be negative")
         if self.log_interval < 0:
@@ -209,6 +246,18 @@ def _build_argument_parser(config: dict[str, Any], config_path: Path) -> argpars
     parser.add_argument("--width", type=int, default=config.get("width", 640), help="Requested camera width")
     parser.add_argument("--height", type=int, default=config.get("height", 480), help="Requested camera height")
     parser.add_argument(
+        "--tracking-width",
+        type=int,
+        default=config.get("tracking_width", 640),
+        help="Width used for MediaPipe hand tracking",
+    )
+    parser.add_argument(
+        "--tracking-height",
+        type=int,
+        default=config.get("tracking_height", 360),
+        help="Height used for MediaPipe hand tracking",
+    )
+    parser.add_argument(
         "--capture-format",
         type=_normalize_capture_format,
         default=_normalize_capture_format(config.get("capture_format", "MJPG")),
@@ -239,6 +288,18 @@ def _build_argument_parser(config: dict[str, Any], config_path: Path) -> argpars
         type=float,
         default=config.get("led_jump_match_distance", 0.12),
         help="Maximum normalized distance between frames when confirming an LED move",
+    )
+    parser.add_argument(
+        "--led-size-smoothing",
+        type=float,
+        default=config.get("led_size_smoothing", 0.2),
+        help="Response of the displayed LED blob size; lower values smooth more",
+    )
+    parser.add_argument(
+        "--led-color-space",
+        choices=("hsv", "rgb"),
+        default=_normalize_led_color_space(config.get("led_color_space", "hsv")),
+        help="Color space used for LED masks",
     )
     white_fallback = parser.add_mutually_exclusive_group()
     white_fallback.add_argument(
@@ -300,10 +361,24 @@ def parse_args(argv: Optional[list[str]] = None) -> SenderConfig:
         fps=namespace.fps,
         width=namespace.width,
         height=namespace.height,
+        tracking_width=namespace.tracking_width,
+        tracking_height=namespace.tracking_height,
         capture_format=namespace.capture_format,
         flip_horizontal=namespace.flip_horizontal,
         led_jump_confirmations=namespace.led_jump_confirmations,
         led_jump_match_distance=namespace.led_jump_match_distance,
+        led_size_smoothing=namespace.led_size_smoothing,
+        led_color_space=namespace.led_color_space,
+        left_led_color=_led_color_config(
+            config.get("left_led_color"),
+            {"hue": 60, "hue_tolerance": 18, "min_saturation": 100, "min_value": 35,
+             "color": [0, 255, 0], "tolerance": 80},
+        ),
+        right_led_color=_led_color_config(
+            config.get("right_led_color"),
+            {"hue": 120, "hue_tolerance": 18, "min_saturation": 150, "min_value": 55,
+             "color": [0, 0, 255], "tolerance": 80},
+        ),
         allow_white_led_fallback=namespace.allow_white_led_fallback,
         log=namespace.log,
         log_interval=namespace.log_interval,
@@ -993,6 +1068,46 @@ def _mask_from_color_ranges(cv2: Any, hsv: np.ndarray, hue_ranges: list[tuple[tu
     return cv2.dilate(mask, None, iterations=1)
 
 
+def _mask_from_led_color(cv2: Any, frame: np.ndarray, color: dict[str, Any]) -> np.ndarray:
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    target = np.asarray(color["color"], dtype=np.int16)
+    tolerance = color.get("tolerance", 80)
+    if isinstance(tolerance, list):
+        tolerance_array = np.asarray(tolerance, dtype=np.int16)
+    else:
+        tolerance_array = np.full(3, int(tolerance), dtype=np.int16)
+    lower = np.clip(target - tolerance_array, 0, 255).astype(np.uint8)
+    upper = np.clip(target + tolerance_array, 0, 255).astype(np.uint8)
+    mask = cv2.inRange(rgb, lower, upper)
+    brightness = np.max(rgb, axis=2)
+    mask[brightness < int(color.get("min_value", 25))] = 0
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, None, iterations=3)
+    return cv2.dilate(mask, None, iterations=1)
+
+
+def _mask_from_hsv_color(cv2: Any, hsv: np.ndarray, color: dict[str, Any]) -> np.ndarray:
+    hue = float(color.get("hue", 0))
+    tolerance = float(color.get("hue_tolerance", 14))
+    minimum_saturation = int(color.get("min_saturation", 60))
+    minimum_value = int(color.get("min_value", 35))
+    ranges = []
+    lower_hue = hue - tolerance
+    upper_hue = hue + tolerance
+    if lower_hue < 0:
+        ranges.extend([
+            ((0, minimum_saturation, minimum_value), (int(upper_hue), 255, 255)),
+            ((int(180 + lower_hue), minimum_saturation, minimum_value), (179, 255, 255)),
+        ])
+    elif upper_hue >= 180:
+        ranges.extend([
+            ((int(lower_hue), minimum_saturation, minimum_value), (179, 255, 255)),
+            ((0, minimum_saturation, minimum_value), (int(upper_hue - 180), 255, 255)),
+        ])
+    else:
+        ranges.append(((int(lower_hue), minimum_saturation, minimum_value), (int(upper_hue), 255, 255)))
+    return _mask_from_color_ranges(cv2, hsv, ranges)
+
+
 def _mask_from_profile(cv2: Any, hsv: np.ndarray, profile: dict[str, float], ambient_profile: Optional[dict[str, float]]) -> np.ndarray:
     hue_distance = np.abs(hsv[:, :, 0].astype(np.float32) - profile["hue"])
     hue_distance = np.minimum(hue_distance, 180.0 - hue_distance)
@@ -1041,6 +1156,9 @@ def _detect_led_positions(
     allow_white_fallback: bool = False,
     ambient_profile: Optional[dict[str, float]] = None,
     color_profiles: Optional[dict[str, dict[str, float]]] = None,
+    color_space: str = "hsv",
+    left_color: Optional[dict[str, Any]] = None,
+    right_color: Optional[dict[str, Any]] = None,
 ) -> tuple[Optional[tuple[float, float, Any]], Optional[tuple[float, float, Any]]]:
     """Track independently colored lightbars, using runtime samples when available."""
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
@@ -1048,18 +1166,19 @@ def _detect_led_positions(
     left_profile = color_profiles.get("Left")
     right_profile = color_profiles.get("Right")
 
-    if left_profile:
+    left_color = left_color or {"hue": 60, "hue_tolerance": 18, "min_saturation": 100, "min_value": 35}
+    right_color = right_color or {"hue": 120, "hue_tolerance": 18, "min_saturation": 150, "min_value": 55}
+    if color_space == "rgb":
+        left_mask = _mask_from_led_color(cv2, frame, left_color)
+        right_mask = _mask_from_led_color(cv2, frame, right_color)
+    elif left_profile:
         left_mask = _mask_from_profile(cv2, hsv, left_profile, ambient_profile)
     else:
-        left_mask = _mask_from_color_ranges(cv2, hsv, [((112, 150, 55), (130, 255, 255))])
-    if right_profile:
+        left_mask = _mask_from_hsv_color(cv2, hsv, left_color)
+    if color_space != "rgb" and right_profile:
         right_mask = _mask_from_profile(cv2, hsv, right_profile, ambient_profile)
-    else:
-        right_mask = _mask_from_color_ranges(
-            cv2,
-            hsv,
-            [((0, 120, 55), (10, 255, 255)), ((170, 120, 55), (180, 255, 255))],
-        )
+    elif color_space != "rgb":
+        right_mask = _mask_from_hsv_color(cv2, hsv, right_color)
 
     left = _find_led_candidate(cv2, hsv, left_mask, frame.shape, expected_x=0.25)
     right = _find_led_candidate(cv2, hsv, right_mask, frame.shape, expected_x=0.75)
@@ -1246,6 +1365,23 @@ class LedTracker:
     jump_candidates: dict[str, Optional[tuple[float, float, int, float]]] = field(
         default_factory=lambda: {"Left": None, "Right": None}
     )
+    sizes: dict[str, Optional[tuple[float, float]]] = field(
+        default_factory=lambda: {"Left": None, "Right": None}
+    )
+
+    def update_size(self, label: str, cv2: Any, contour: Any, smoothing: float) -> tuple[float, float]:
+        _, _, width, height = cv2.boundingRect(contour)
+        current = (float(width), float(height))
+        previous = self.sizes[label]
+        if previous is None:
+            smoothed = current
+        else:
+            smoothed = tuple(
+                previous[index] + (current[index] - previous[index]) * smoothing
+                for index in range(2)
+            )
+        self.sizes[label] = smoothed
+        return smoothed
 
     def accept(
         self,
@@ -1568,7 +1704,14 @@ class CameraSenderApp:
                     self._apply_led_sample(sample_result)
                     led_positions = self._detect_and_update_leds(frame, output, now)
                 else:
-                    rgb_frame = self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2RGB)
+                    tracking_frame = frame
+                    if tracking_frame.shape[1] != self.config.tracking_width or tracking_frame.shape[0] != self.config.tracking_height:
+                        tracking_frame = self.cv2.resize(
+                            tracking_frame,
+                            (self.config.tracking_width, self.config.tracking_height),
+                            interpolation=self.cv2.INTER_AREA,
+                        )
+                    rgb_frame = self.cv2.cvtColor(tracking_frame, self.cv2.COLOR_BGR2RGB)
                     hand_results = self.hand_detector(rgb_frame)
                     calibration_sample = self.state.hand_calibration.update(
                         hand_results,
@@ -1665,6 +1808,9 @@ class CameraSenderApp:
             allow_white_fallback=self.config.allow_white_led_fallback,
             ambient_profile=self.state.ambient_profile,
             color_profiles=self.state.led_color_profiles,
+            color_space=self.config.led_color_space,
+            left_color=self.config.left_led_color,
+            right_color=self.config.right_led_color,
         )
         if self.state.led_calibration_armed and led_positions[0] is not None and led_positions[1] is not None:
             left_led_x, left_led_y, _ = led_positions[0]
@@ -1687,6 +1833,12 @@ class CameraSenderApp:
                 self.config.led_jump_match_distance,
             ):
                 continue
+            blob_width, blob_height = self.state.led_tracker.update_size(
+                label,
+                self.cv2,
+                contour,
+                self.config.led_size_smoothing,
+            )
             calibrated_x, calibrated_y = self.state.circle.apply(
                 led_x,
                 led_y,
@@ -1700,7 +1852,9 @@ class CameraSenderApp:
                 output.right_x, output.right_y = calibrated_x, calibrated_y
             if self.config.preview and self.state.debug_visible:
                 led_color = (255, 120, 0) if label == "Left" else (0, 0, 255)
-                self.cv2.drawContours(frame, [contour], -1, led_color, 2)
+                center = (int(led_x * frame.shape[1]), int(led_y * frame.shape[0]))
+                axes = (max(2, int(blob_width / 2.0)), max(2, int(blob_height / 2.0)))
+                self.cv2.ellipse(frame, center, axes, 0, 0, 360, led_color, 2)
         return led_positions
 
     def _update_hand_tracking(

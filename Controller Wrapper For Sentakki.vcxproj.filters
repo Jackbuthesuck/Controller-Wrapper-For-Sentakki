@@ -44,4 +44,13 @@
       <Filter>Resource Files</Filter>
     </Manifest>
   </ItemGroup>
+  <ItemGroup>
+    <None Include="requirements.txt" />
+    <None Include="camera_config.json" />
+    <None Include="camera_sender.py" />
+    <None Include="hand_landmarker.task" />
+    <None Include="README.md" />
+    <None Include="DEVELOPMENT_NOTES.md" />
+    <None Include=".github\copilot-instructions.md" />
+  </ItemGroup>
 </Project>

@@ -238,6 +238,7 @@ private:
     void displayControllerMenu(const std::vector<ControllerInfo>& controllers);
     int getControllerSelection(int maxControllers);
     bool initializeDirectInputWithDevice(const GUID& deviceGuid);
+    bool reacquireDirectInputDevice(LPDIRECTINPUTDEVICE8 device);
     
     // ========== Overlay Rendering ==========
     void updateOverlay(double leftX, double leftY, double rightX, double rightY, double leftAngle, double rightAngle);

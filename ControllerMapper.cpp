@@ -654,6 +654,29 @@ bool ControllerMapper::initializeDirectInputWithDevice(const GUID& deviceGuid) {
     return true;
 }
 
+bool ControllerMapper::reacquireDirectInputDevice(LPDIRECTINPUTDEVICE8 device) {
+    if (!device) {
+        return false;
+    }
+
+    device->Unacquire();
+    HRESULT hr = device->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_BACKGROUND);
+    if (FAILED(hr)) {
+        hr = device->SetCooperativeLevel(hwnd, DISCL_NONEXCLUSIVE | DISCL_FOREGROUND);
+    }
+    if (FAILED(hr)) {
+        logError("Failed to restore DirectInput cooperative level after input loss.");
+        return false;
+    }
+
+    hr = device->Acquire();
+    if (FAILED(hr)) {
+        logError("Failed to reacquire DirectInput device after input loss.");
+        return false;
+    }
+    return true;
+}
+
 // Interactive DirectInput button mapping: prompts user to press a button for each role
 bool ControllerMapper::mapDirectInputButtons(LPDIRECTINPUTDEVICE8 device) {
     if (!device) return false;
@@ -1955,8 +1978,7 @@ void ControllerMapper::run() {
                 DIJOYSTATE2 state;
                 HRESULT hr = device->GetDeviceState(sizeof(DIJOYSTATE2), &state);
                 if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
-                    device->Unacquire();
-                    device->Acquire();
+                    reacquireDirectInputDevice(device);
                     continue;
                 }
                 if (SUCCEEDED(hr)) {
@@ -2010,8 +2032,7 @@ void ControllerMapper::run() {
             
             // If device lost, try to reacquire
             if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
-                joystick->Unacquire();
-                joystick->Acquire();
+                reacquireDirectInputDevice(joystick);
                 continue;
             }
             
@@ -2150,9 +2171,8 @@ void ControllerMapper::run() {
         } else {
             // Try to reacquire DirectInput if needed
             if (joystick) {
-                joystick->Unacquire();
                 Sleep(10);
-                joystick->Acquire();
+                reacquireDirectInputDevice(joystick);
             }
         }
             

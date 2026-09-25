@@ -4,21 +4,41 @@
   // 0=show the mode menu, 1=camera, 2=touch, 3=keyboard, 4=mouse.
   "startup_mode": 1,
   // 0=show the camera-input menu, 1=DS4 LED, 2=push, 3=open hand.
-  "input_mode": 2,
+  "input_mode": 1,
   // 0=show the camera-source menu, 1=webcam, 2=scrcpy window, 3=scrcpy monitor.
   "camera_source": 1,
   // Used when camera_source=1: 0 is the first camera; -1 lists cameras and prompts.
-  "camera_index": -1,
+  "camera_index": 0,
   "preview": true,
   "auto_download_model": true,
   "fps": 60,
   "width": 1280,
   "height": 720,
+  "tracking_width": 640,
+  "tracking_height": 360,
   // MJPG, YUY2, NV12, H264
   // Keep MJPG and mirroring for Webcam. HDMI cards may prefer auto/YUY2 and no flip.
   "capture_format": "auto",
   "flip_horizontal": true,
   "led_jump_confirmations": 2,
   "led_jump_match_distance": 0.12,
+  "led_size_smoothing": 0.2,
+  "led_color_space": "hsv",
+  "left_led_color": {
+    "hue": 60,
+    "hue_tolerance": 18,
+    "min_saturation": 100,
+    "min_value": 35,
+    "color": [0, 255, 0],
+    "tolerance": 80
+  },
+  "right_led_color": {
+    "hue": 120,
+    "hue_tolerance": 18,
+    "min_saturation": 150,
+    "min_value": 55,
+    "color": [0, 0, 255],
+    "tolerance": 80
+  },
   "allow_white_led_fallback": false
 }
