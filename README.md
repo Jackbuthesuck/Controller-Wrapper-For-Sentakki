@@ -102,6 +102,7 @@ Use DS4Windows to set the left and right lightbars to distinct colors before sta
 
 The runtime calibration controls are sent from the controller:
 
+- L1/R2 : Touch down
 - D-pad Up: hold over an empty background, then release to sample ambient light
 - D-pad Left: hold over the left lightbar, then release to sample its color
 - D-pad Right: hold over the right lightbar, then release to sample its color
