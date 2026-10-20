@@ -908,7 +908,7 @@ def _palm_scale(landmarks: Any) -> float:
     return (across_palm + palm_length) / 2.0
 
 
-def _calibrate_position(
+def _calibrate_position_raw(
     norm_x: float,
     norm_y: float,
     left_edge: float,
@@ -923,6 +923,10 @@ def _calibrate_position(
     center_x = (left_edge + right_edge) / 2.0
     calibrated_x = 0.5 + (norm_x - center_x) / diameter_x
     calibrated_y = 0.5 + (norm_y - center_y) / diameter_y
+    return calibrated_x, calibrated_y
+
+
+def _clamp_calibrated_position(calibrated_x: float, calibrated_y: float) -> tuple[float, float]:
     offset_x = calibrated_x - 0.5
     offset_y = calibrated_y - 0.5
     distance = math.hypot(offset_x, offset_y)
@@ -931,6 +935,21 @@ def _calibrate_position(
         offset_x *= scale
         offset_y *= scale
     return max(0.0, min(1.0, 0.5 + offset_x)), max(0.0, min(1.0, 0.5 + offset_y))
+
+
+def _calibrate_position(
+    norm_x: float,
+    norm_y: float,
+    left_edge: float,
+    right_edge: float,
+    center_y: float,
+    frame_width: int,
+    frame_height: int,
+) -> tuple[float, float]:
+    raw_x, raw_y = _calibrate_position_raw(
+        norm_x, norm_y, left_edge, right_edge, center_y, frame_width, frame_height
+    )
+    return _clamp_calibrated_position(raw_x, raw_y)
 
 
 def _measure_led_ambient(cv2: Any, frame: np.ndarray) -> dict[str, float]:
@@ -1223,9 +1242,19 @@ class CircleCalibration:
         return True
 
     def apply(self, norm_x: float, norm_y: float, frame_width: int, frame_height: int) -> tuple[float, float]:
+        calibrated_x, calibrated_y, _, _ = self.apply_with_raw(norm_x, norm_y, frame_width, frame_height)
+        return calibrated_x, calibrated_y
+
+    def apply_raw(self, norm_x: float, norm_y: float, frame_width: int, frame_height: int) -> tuple[float, float]:
+        _, _, raw_x, raw_y = self.apply_with_raw(norm_x, norm_y, frame_width, frame_height)
+        return raw_x, raw_y
+
+    def apply_with_raw(
+        self, norm_x: float, norm_y: float, frame_width: int, frame_height: int
+    ) -> tuple[float, float, float, float]:
         if not self.valid:
-            return norm_x, norm_y
-        return _calibrate_position(
+            return norm_x, norm_y, norm_x, norm_y
+        raw_x, raw_y = _calibrate_position_raw(
             norm_x,
             norm_y,
             self.left_edge,
@@ -1234,6 +1263,8 @@ class CircleCalibration:
             frame_width,
             frame_height,
         )
+        calibrated_x, calibrated_y = _clamp_calibrated_position(raw_x, raw_y)
+        return calibrated_x, calibrated_y, raw_x, raw_y
 
 
 @dataclass(frozen=True)
@@ -1302,11 +1333,18 @@ class OutputState:
     right_x: float = 0.5
     right_y: float = 0.5
     right_pressed: int = 0
+    raw_left_x: float = 0.5
+    raw_left_y: float = 0.5
+    raw_right_x: float = 0.5
+    raw_right_y: float = 0.5
 
 
 @dataclass
 class TrackingState:
     positions: dict[str, list[float]] = field(
+        default_factory=lambda: {"Left": [0.5, 0.5], "Right": [0.5, 0.5]}
+    )
+    raw_positions: dict[str, list[float]] = field(
         default_factory=lambda: {"Left": [0.5, 0.5], "Right": [0.5, 0.5]}
     )
     pressed: dict[str, int] = field(default_factory=lambda: {"Left": 0, "Right": 0})
@@ -1326,6 +1364,10 @@ class TrackingState:
             right_x=self.positions["Right"][0],
             right_y=self.positions["Right"][1],
             right_pressed=self.pressed["Right"],
+            raw_left_x=self.raw_positions["Left"][0],
+            raw_left_y=self.raw_positions["Left"][1],
+            raw_right_x=self.raw_positions["Right"][0],
+            raw_right_y=self.raw_positions["Right"][1],
         )
 
     def expire_lost(self, now: float, timeout: float) -> None:
@@ -1333,6 +1375,7 @@ class TrackingState:
             if now - self.last_seen[label] <= timeout:
                 continue
             self.positions[label] = [0.5, 0.5]
+            self.raw_positions[label] = [0.5, 0.5]
             self.pressed[label] = 0
             self.push_states[label] = False
             self.push_metrics[label] = 0.0
@@ -1351,8 +1394,11 @@ class TrackingState:
         self.push_states = {"Left": False, "Right": False}
         self.push_metrics = {"Left": 0.0, "Right": 0.0}
 
-    def update_position(self, label: str, norm_x: float, norm_y: float, pressed: bool, now: float) -> None:
+    def update_position(
+        self, label: str, norm_x: float, norm_y: float, pressed: bool, now: float, raw_x: float, raw_y: float
+    ) -> None:
         self.positions[label] = [max(0.0, min(1.0, norm_x)), max(0.0, min(1.0, norm_y))]
+        self.raw_positions[label] = [raw_x, raw_y]
         self.pressed[label] = 1 if pressed else 0
         self.last_seen[label] = now
 
@@ -1839,17 +1885,19 @@ class CameraSenderApp:
                 contour,
                 self.config.led_size_smoothing,
             )
-            calibrated_x, calibrated_y = self.state.circle.apply(
+            calibrated_x, calibrated_y, raw_x, raw_y = self.state.circle.apply_with_raw(
                 led_x,
                 led_y,
                 frame.shape[1],
                 frame.shape[0],
             )
-            self.state.tracking.update_position(label, calibrated_x, calibrated_y, False, now)
+            self.state.tracking.update_position(label, calibrated_x, calibrated_y, False, now, raw_x, raw_y)
             if label == "Left":
                 output.left_x, output.left_y = calibrated_x, calibrated_y
+                output.raw_left_x, output.raw_left_y = raw_x, raw_y
             else:
                 output.right_x, output.right_y = calibrated_x, calibrated_y
+                output.raw_right_x, output.raw_right_y = raw_x, raw_y
             if self.config.preview and self.state.debug_visible:
                 led_color = (255, 120, 0) if label == "Left" else (0, 0, 255)
                 center = (int(led_x * frame.shape[1]), int(led_y * frame.shape[0]))
@@ -1896,17 +1944,19 @@ class CameraSenderApp:
                     pressed = depth_growth >= threshold
                     self.state.tracking.push_states[label] = pressed
 
-            calibrated_x, calibrated_y = self.state.circle.apply(
+            calibrated_x, calibrated_y, raw_x, raw_y = self.state.circle.apply_with_raw(
                 observation.x,
                 observation.y,
                 frame_width,
                 frame_height,
             )
-            self.state.tracking.update_position(label, calibrated_x, calibrated_y, pressed, now)
+            self.state.tracking.update_position(label, calibrated_x, calibrated_y, pressed, now, raw_x, raw_y)
             if label == "Left":
                 output.left_x, output.left_y, output.left_pressed = calibrated_x, calibrated_y, int(pressed)
+                output.raw_left_x, output.raw_left_y = raw_x, raw_y
             else:
                 output.right_x, output.right_y, output.right_pressed = calibrated_x, calibrated_y, int(pressed)
+                output.raw_right_x, output.raw_right_y = raw_x, raw_y
 
     def _send_output(self, output: OutputState, now: float, min_frame_dt: float) -> None:
         if now - self.last_send < min_frame_dt:

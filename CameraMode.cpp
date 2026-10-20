@@ -247,16 +247,34 @@ void ControllerMapper::startUDPListener(int port) {
                 if (len > 0) {
                     buf[len] = '\0';
                     double lx = 0.0, ly = 0.0, rx = 0.0, ry = 0.0;
+                    double rawLx = 0.0, rawLy = 0.0, rawRx = 0.0, rawRy = 0.0;
                     int lp = 0, rp = 0, controllerClicks = 0;
-                    // Expect CSV: lx,ly,lp,rx,ry,rp[,controller_clicks]
-                    int matched = sscanf_s(buf, "%lf,%lf,%d,%lf,%lf,%d,%d", &lx, &ly, &lp, &rx, &ry, &rp, &controllerClicks);
-                    if (matched == 6 || matched == 7) {
+                    // Expect CSV: lx,ly,lp,rx,ry,rp,controller_clicks,raw_lx,raw_ly,raw_rx,raw_ry
+                    int matched = sscanf_s(buf, "%lf,%lf,%d,%lf,%lf,%d,%d,%lf,%lf,%lf,%lf",
+                                           &lx, &ly, &lp, &rx, &ry, &rp, &controllerClicks,
+                                           &rawLx, &rawLy, &rawRx, &rawRy);
+                    if (matched == 6 || matched == 7 || matched == 11) {
+                        if (matched != 11) {
+                            rawLx = lx;
+                            rawLy = ly;
+                            rawRx = rx;
+                            rawRy = ry;
+                        }
+
                         std::lock_guard<std::mutex> lock(udpMutex);
                         // Clamp normalized values to [0..1] to keep camera input sane.
                         if (lx < 0.0) lx = 0.0; else if (lx > 1.0) lx = 1.0;
                         if (ly < 0.0) ly = 0.0; else if (ly > 1.0) ly = 1.0;
                         if (rx < 0.0) rx = 0.0; else if (rx > 1.0) rx = 1.0;
                         if (ry < 0.0) ry = 0.0; else if (ry > 1.0) ry = 1.0;
+
+                        if (!std::isfinite(rawLx) || !std::isfinite(rawLy) ||
+                            !std::isfinite(rawRx) || !std::isfinite(rawRy)) {
+                            rawLx = lx;
+                            rawLy = ly;
+                            rawRx = rx;
+                            rawRy = ry;
+                        }
 
                         // Apply EMA smoothing similar to camera-side stabilization.
                         if (!externalSmoothingInitialized) {
@@ -275,7 +293,11 @@ void ControllerMapper::startUDPListener(int port) {
 
                         externalLeftPressed = (lp != 0);
                         externalRightPressed = (rp != 0);
-                        externalUsesControllerButtons = (matched == 7 && controllerClicks != 0);
+                        externalRawLeftX = rawLx;
+                        externalRawLeftY = rawLy;
+                        externalRawRightX = rawRx;
+                        externalRawRightY = rawRy;
+                        externalUsesControllerButtons = (controllerClicks != 0);
                         externalLastPacketMs = GetTickCount64();
                         useExternalInput = true;
                     }
@@ -294,8 +316,8 @@ void ControllerMapper::stopUDPListener() {
     if (udpThread.joinable()) udpThread.join();
 }
 
-// Camera mode handler: forward to touch handler using only primary flags
-void ControllerMapper::handleCameraControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY) {
-    // No trigger or stick-press emulation; pass false for l2,r2,l3,r3
-    handleTouchControl(l1, r1, false, false, false, false, leftX, leftY, rightX, rightY);
+// Camera mode handler: use the same button and touch controls as touch mode
+void ControllerMapper::handleCameraControl(bool l1, bool r1, bool l2, bool r2, bool l3, bool r3,
+                                           double leftX, double leftY, double rightX, double rightY) {
+    handleTouchControl(l1, r1, l2, r2, l3, r3, leftX, leftY, rightX, rightY);
 }

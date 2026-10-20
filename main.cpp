@@ -59,6 +59,7 @@ static bool readJsonIndex(const std::string& json, const char* key, int& value) 
 		if (name == "ds4led") value = 1;
 		else if (name == "push") value = 2;
 		else if (name == "open" || name == "curl") value = 3;
+		else if (name == "cursor" || name == "cursor_debug") value = 4;
 		else return false;
 	} else if (std::string(key) == "camera_source") {
 		if (name == "webcam") value = 1;
@@ -121,6 +122,8 @@ static bool applyStartupConfig(const StartupConfig& config, InputMode& selectedM
 			selectedCameraMode = CameraInputMode::Push;
 		} else if (config.cameraInputMode == 3) {
 			selectedCameraMode = CameraInputMode::Curl;
+		} else if (config.cameraInputMode == 4) {
+			selectedCameraMode = CameraInputMode::CursorDebug;
 		} else {
 			return false;
 		}
@@ -160,6 +163,8 @@ static bool applyCameraInputMode(int choice, CameraInputMode& selectedCameraMode
 		selectedCameraMode = CameraInputMode::Push;
 	} else if (choice == 3) {
 		selectedCameraMode = CameraInputMode::Curl;
+	} else if (choice == 4) {
+		selectedCameraMode = CameraInputMode::CursorDebug;
 	} else {
 		return false;
 	}
@@ -219,7 +224,8 @@ static bool selectCameraSetup(const StartupConfig& config, bool useConfig, Camer
 		std::cout << "  [1] Track DS4 LED, use L1/R1 for click" << std::endl;
 		std::cout << "  [2] Push for click" << std::endl;
 		std::cout << "  [3] Open hand for click (curl for rest)" << std::endl;
-		std::cout << "Select camera input (1-3): ";
+		std::cout << "  [4] Cursor debug (visual only)" << std::endl;
+		std::cout << "Select camera input (1-4): ";
 		char cameraChoice = _getch();
 		if (cameraChoice == 27) {
 			std::cout << std::endl << std::endl;
@@ -230,6 +236,11 @@ static bool selectCameraSetup(const StartupConfig& config, bool useConfig, Camer
 			std::cout << "Invalid camera input. Using DS4 LED tracking." << std::endl;
 			selectedCameraMode = CameraInputMode::DS4Led;
 		}
+	}
+
+	if (selectedCameraMode == CameraInputMode::CursorDebug) {
+		selectedCameraIndex = -1;
+		return true;
 	}
 
 	if (useConfig && config.cameraSource != 0) {

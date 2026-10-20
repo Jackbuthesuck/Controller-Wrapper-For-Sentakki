@@ -53,7 +53,8 @@ enum class InputMode {
 enum class CameraInputMode {
     Push,
     Curl,
-    DS4Led
+    DS4Led,
+    CursorDebug
 };
 
 enum class ControllerSourceMode {
@@ -116,7 +117,7 @@ private:
     double overlayRightLockedX, overlayRightLockedY;  // Right locked position
     int overlayLeftLockedAlpha, overlayRightLockedAlpha; // Locked pointer alpha
     
-    // L3/R3 5-touch X pattern visualization
+    // L3/R3 large-contact visualization
     double overlayL3CenterX, overlayL3CenterY;      // L3 center position
     double overlayR3CenterX, overlayR3CenterY;      // R3 center position
     int overlayL3Alpha, overlayR3Alpha;             // L3/R3 pattern alpha
@@ -162,9 +163,9 @@ private:
     bool prevL3;  // Previous L3 (left stick press) button state
     bool prevR3;  // Previous R3 (right stick press) button state
     
-    // L3/R3 5-touch X pattern state
-    bool l3TouchActive;  // Whether L3 5-touch pattern is active
-    bool r3TouchActive;  // Whether R3 5-touch pattern is active
+    // L3/R3 large-contact state
+    bool l3TouchActive;  // Whether the L3 large contact is active
+    bool r3TouchActive;  // Whether the R3 large contact is active
     
     // All 20 touch tracking (0-19) for debug overlay
     bool touchActive[20];  // Whether each touch is active
@@ -210,7 +211,8 @@ private:
     static constexpr double DEGREES_PER_SECTOR = 45.0;  // 360° / 8 = 45°
     static constexpr int OVERLAY_STICK_INDICATOR_RADIUS = 16;  // Pixel radius for stick indicators
     static constexpr int OVERLAY_LOCKED_INDICATOR_RADIUS = 14;  // Pixel radius for locked indicators (smaller)
-    static constexpr int X_PATTERN_RADIUS_PIXELS = 125;  // Pixel radius for 5-touch X pattern (center to corner distance)
+    static constexpr int DEFAULT_TOUCH_CONTACT_RADIUS_PIXELS = 15;
+    static constexpr int LARGE_TOUCH_CONTACT_RADIUS_PIXELS = 120;
 
 public:
     // ========== Constructor & Initialization ==========
@@ -254,7 +256,6 @@ private:
     void drawTouchPointIndicatorAtOverlayPos(HDC hdc, int overlayX, int overlayY, COLORREF color);
     void drawTouchPointIndicator(HDC hdc, LONG screenX, LONG screenY, COLORREF color);
     void drawLockedPointer(HDC hdc, int centerX, int centerY, double stickX, double stickY, COLORREF color, int alpha);
-    void drawPalmTouchPattern(HDC hdc, int centerX, int centerY, double centerStickX, double centerStickY, COLORREF color, int alpha);
     void drawAllTouches(HDC hdc, int centerX, int centerY);
     void drawDebugText(HDC hdc, RECT rect);
     
@@ -282,7 +283,8 @@ private:
     void handleTouchControl(bool l1, bool r1, bool l2, bool r2, bool l3, bool r3, double leftX, double leftY, double rightX, double rightY);
     void handleMouseControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY);
     void handleKeyboardControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY);
-    void handleCameraControl(bool l1, bool r1, double leftX, double leftY, double rightX, double rightY);
+    void handleCameraControl(bool l1, bool r1, bool l2, bool r2, bool l3, bool r3,
+                             double leftX, double leftY, double rightX, double rightY);
     
     // ========== Touch Mode Methods (forward declarations) ==========
     // These are implemented in TouchMode.cpp
@@ -292,8 +294,8 @@ private:
     InjectedInputTouchInfo createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp);
     InjectedInputTouchInfo createTouchInfo(int touchId, double stickX, double stickY, bool isDown, bool isUp, int contactRadius);
     void sendMultipleTouches(const std::vector<InjectedInputTouchInfo>& touches);
-    void sendPalmTouch(double centerX, double centerY, int centerTouchId, int cornerStartId, bool isDown, bool isUp);
-    void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp);
+    void sendTouch(int touchId, double stickX, double stickY, bool isDown, bool isUp,
+                   int contactRadius = DEFAULT_TOUCH_CONTACT_RADIUS_PIXELS);
     void sendBothTouchesIfActive(double leftX, double leftY, double rightX, double rightY,
                                  double leftLockedX, double leftLockedY, bool leftLocked,
                                  double rightLockedX, double rightLockedY, bool rightLocked);
@@ -326,6 +328,8 @@ private:
     std::mutex udpMutex;
     // External normalized coordinates [0..1]
     double externalLeftX{0.0}, externalLeftY{0.0}, externalRightX{0.0}, externalRightY{0.0};
+    // Raw post-calibration camera positions; may extend beyond [0..1]
+    double externalRawLeftX{0.5}, externalRawLeftY{0.5}, externalRawRightX{0.5}, externalRawRightY{0.5};
     bool externalLeftPressed{false}, externalRightPressed{false};
     bool externalUsesControllerButtons{false};
     bool useExternalInput{false};

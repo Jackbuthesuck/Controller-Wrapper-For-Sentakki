@@ -149,6 +149,7 @@
     <ClCompile Include="ControllerMapper.cpp" />
     <ClCompile Include="KeyboardMode.cpp" />
     <ClCompile Include="MouseMode.cpp" />
+    <ClCompile Include="TouchInjection.cpp" />
     <ClCompile Include="TouchMode.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>

@@ -64,9 +64,8 @@ bool ControllerMapper::initialize() {
         if (!hwnd) {
             createGUI();
         }
-    // Start UDP listener for external CV input
-    startUDPListener(8765);
-    if (currentMode == InputMode::Camera) {
+    if (currentMode == InputMode::Camera && cameraInputMode != CameraInputMode::CursorDebug) {
+        startUDPListener(8765);
         if (!startCameraSenderProcess()) {
             logError("Failed to auto-start camera_sender.py. You can still run it manually.");
         }
@@ -306,7 +305,7 @@ void ControllerMapper::updateOverlayPosition() {
     // Calculate new overlay position based on current monitor
     int screenWidth = monitorWidth;
     int screenHeight = monitorHeight;
-    int overlayHeight = (int)(screenHeight * 0.9);
+    int overlayHeight = screenHeight;
     int overlayWidth = screenWidth;
     
     int posX = monitorLeft; // Start at left edge of detected monitor
@@ -369,19 +368,18 @@ void ControllerMapper::createOverlay() {
     int screenHeight = monitorHeight;
     
     // Calculate overlay size - full screen width, 90% height
-    int overlayHeight = (int)(screenHeight * 0.9);
-    int overlayWidth = screenWidth; // Full screen width for debug text visibility
+    int overlayHeight = screenHeight;
+    int overlayWidth = screenWidth; // Full monitor bounds for overlay rendering
     
-    // Calculate stick radius to fill most of the overlay (leave some padding)
-    // Use height as reference since width is now full-screen
-    overlayStickRadius = (int)(overlayHeight * 0.45); // 45% of height (90% of half = radius)
+    // Preserve the current playfield size while extending the overlay to the full monitor.
+    overlayStickRadius = (int)(screenHeight * 0.9 * 0.45);
     
     // Get screen refresh rate from the detected monitor (using helper function)
     updateRefreshRate();
     
-    // Position overlay on the detected monitor (left edge of monitor, vertically centered)
-    int posX = monitorLeft; // Start at left edge of detected monitor
-    int posY = monitorTop + (screenHeight - overlayHeight) / 2;
+    // Cover the full detected monitor.
+    int posX = monitorLeft;
+    int posY = monitorTop;
     
     // Store overlay position
     overlayPosX = posX;
@@ -414,7 +412,8 @@ void ControllerMapper::createOverlay() {
     UpdateWindow(overlayHwnd);
     
     // Camera mode uses the same touch injection pipeline as Touch mode.
-    if (currentMode == InputMode::Touch || currentMode == InputMode::Camera) {
+    if (currentMode == InputMode::Touch ||
+        (currentMode == InputMode::Camera && cameraInputMode != CameraInputMode::CursorDebug)) {
         initializeTouchInjection();
     }
 }
@@ -756,7 +755,7 @@ void ControllerMapper::updateOverlay(double leftX, double leftY, double rightX, 
     updateTouchPointerPosition(rightTouchActive, rightPointerLocked, currentRHeldDirection, rightLockedDirection,
                               rightX, rightY, overlayRightLockedX, overlayRightLockedY, overlayRightLockedAlpha);
     
-    // Calculate L3/R3 5-touch X pattern positions and alpha
+    // Track L3/R3 large-contact positions and alpha for redraws
     overlayL3CenterX = l3TouchActive ? leftX : 0;
     overlayL3CenterY = l3TouchActive ? leftY : 0;
     overlayL3Alpha = l3TouchActive ? 255 : 0;
@@ -876,6 +875,113 @@ void ControllerMapper::drawOverlay(HDC hdc) {
     // Calculate center position - both sticks in the same location
     int centerX = rect.right / 2;
     int centerY = rect.bottom / 2;
+
+    if (currentMode == InputMode::Camera) {
+        double rawLeftX, rawLeftY, rawRightX, rawRightY;
+        bool hasCameraPosition;
+        {
+            std::lock_guard<std::mutex> lock(udpMutex);
+            rawLeftX = externalRawLeftX;
+            rawLeftY = externalRawLeftY;
+            rawRightX = externalRawRightX;
+            rawRightY = externalRawRightY;
+            hasCameraPosition = useExternalInput && cameraInputMode != CameraInputMode::CursorDebug;
+        }
+
+        double leftStickX = rawLeftX * 2.0 - 1.0;
+        double leftStickY = 1.0 - rawLeftY * 2.0;
+        POINT cursorPosition = {};
+        bool hasCursorPosition = cameraInputMode == CameraInputMode::CursorDebug && GetCursorPos(&cursorPosition);
+        if (hasCursorPosition) {
+            double cursorScale = overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS;
+            if (cursorScale > 0) {
+                leftStickX = (cursorPosition.x - (overlayPosX + centerX)) / cursorScale;
+                leftStickY = ((overlayPosY + centerY) - cursorPosition.y) / cursorScale;
+
+                int savedDC = SaveDC(hdc);
+                HRGN playfieldRegion = CreateEllipticRgn(
+                    centerX - overlayStickRadius, centerY - overlayStickRadius,
+                    centerX + overlayStickRadius + 1, centerY + overlayStickRadius + 1);
+                SelectClipRgn(hdc, playfieldRegion);
+                int markerX = static_cast<int>(cursorPosition.x - overlayPosX);
+                int markerY = static_cast<int>(cursorPosition.y - overlayPosY);
+                HPEN markerPen = CreatePen(PS_SOLID, 1, RGB(100, 150, 255));
+                HBRUSH markerBrush = CreateSolidBrush(RGB(100, 150, 255));
+                HPEN oldPen = (HPEN)SelectObject(hdc, markerPen);
+                HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, markerBrush);
+                Ellipse(hdc, markerX - 4, markerY - 4, markerX + 5, markerY + 5);
+                SelectObject(hdc, oldPen);
+                SelectObject(hdc, oldBrush);
+                DeleteObject(markerPen);
+                DeleteObject(markerBrush);
+                RestoreDC(hdc, savedDC);
+                DeleteObject(playfieldRegion);
+            }
+        }
+
+        auto drawCameraGuide = [&](double stickX, double stickY, COLORREF color) {
+            int targetX, targetY;
+            convertStickToOverlayCoords(stickX, stickY, centerX, centerY, targetX, targetY);
+            double dx = targetX - centerX;
+            double dy = targetY - centerY;
+            double distance = std::hypot(dx, dy);
+            if (overlayStickRadius <= 0 || distance <= overlayStickRadius) return;
+
+            double startScale = overlayStickRadius / distance;
+            int startX = centerX + static_cast<int>(std::lround(dx * startScale));
+            int startY = centerY + static_cast<int>(std::lround(dy * startScale));
+            double directionX = dx / distance;
+            double directionY = dy / distance;
+            double perpendicularX = -directionY;
+            double perpendicularY = directionX;
+            double overshoot = distance - overlayStickRadius;
+            int triangleLength = static_cast<int>(std::clamp(6.0 + overshoot * 0.12, 6.0, 24.0));
+            int triangleHalfWidth = (triangleLength / 2 > 3) ? triangleLength / 2 : 3;
+            POINT triangle[3] = {
+                { startX, startY },
+                { startX + static_cast<int>(std::lround(directionX * triangleLength + perpendicularX * triangleHalfWidth)),
+                  startY + static_cast<int>(std::lround(directionY * triangleLength + perpendicularY * triangleHalfWidth)) },
+                { startX + static_cast<int>(std::lround(directionX * triangleLength - perpendicularX * triangleHalfWidth)),
+                  startY + static_cast<int>(std::lround(directionY * triangleLength - perpendicularY * triangleHalfWidth)) }
+            };
+
+            HPEN guidePen = CreatePen(PS_DOT, 1, color);
+            HPEN oldPen = (HPEN)SelectObject(hdc, guidePen);
+            MoveToEx(hdc, startX, startY, nullptr);
+            LineTo(hdc, targetX, targetY);
+            SelectObject(hdc, oldPen);
+            DeleteObject(guidePen);
+
+            HPEN trianglePen = CreatePen(PS_SOLID, 1, color);
+            HBRUSH triangleBrush = CreateSolidBrush(color);
+            oldPen = (HPEN)SelectObject(hdc, trianglePen);
+            HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, triangleBrush);
+            Polygon(hdc, triangle, 3);
+            SelectObject(hdc, oldPen);
+            SelectObject(hdc, oldBrush);
+            DeleteObject(trianglePen);
+            DeleteObject(triangleBrush);
+        };
+
+        if (hasCameraPosition || hasCursorPosition) {
+            int savedDC = SaveDC(hdc);
+            HRGN outsideRegion = CreateRectRgn(rect.left, rect.top, rect.right, rect.bottom);
+            HRGN playfieldRegion = CreateEllipticRgn(
+                centerX - overlayStickRadius, centerY - overlayStickRadius,
+                centerX + overlayStickRadius + 1, centerY + overlayStickRadius + 1);
+            CombineRgn(outsideRegion, outsideRegion, playfieldRegion, RGN_DIFF);
+            SelectClipRgn(hdc, outsideRegion);
+            if (hasCursorPosition || hasCameraPosition) {
+                drawCameraGuide(leftStickX, leftStickY, RGB(100, 150, 255));
+            }
+            if (hasCameraPosition) {
+                drawCameraGuide(rawRightX * 2.0 - 1.0, 1.0 - rawRightY * 2.0, RGB(255, 100, 150));
+            }
+            RestoreDC(hdc, savedDC);
+            DeleteObject(outsideRegion);
+            DeleteObject(playfieldRegion);
+        }
+    }
     
     // Draw boundary circle with fade based on max alpha
     int maxAlpha = (overlayLeftAlpha > overlayRightAlpha) ? overlayLeftAlpha : overlayRightAlpha;
@@ -946,14 +1052,7 @@ void ControllerMapper::drawOverlay(HDC hdc) {
     // Right locked pointer (darker pink) - draw below raw pointer
     drawLockedPointer(hdc, centerX, centerY, overlayRightLockedX, overlayRightLockedY, RGB(200, 50, 100), overlayRightLockedAlpha);
     
-    // Draw L3/R3 5-touch X pattern (only when L3/R3 is active)
-    // L3 pattern (darker blue-green) - draw below locked pointer
-    drawPalmTouchPattern(hdc, centerX, centerY, overlayL3CenterX, overlayL3CenterY, RGB(50, 200, 150), overlayL3Alpha);
-    
-    // R3 pattern (darker pink-purple) - draw below locked pointer
-    drawPalmTouchPattern(hdc, centerX, centerY, overlayR3CenterX, overlayR3CenterY, RGB(200, 50, 150), overlayR3Alpha);
-    
-    // Draw all 10 touches (0-9) for debug overlay
+    // Draw active injected touches
     drawAllTouches(hdc, centerX, centerY);
     
     // Draw debug text on the middle left (if enabled)
@@ -1189,142 +1288,22 @@ void ControllerMapper::drawLockedPointer(HDC hdc, int centerX, int centerY, doub
     DeleteObject(solidBrush);
 }
 
-void ControllerMapper::drawPalmTouchPattern(HDC hdc, int centerX, int centerY, double centerStickX, double centerStickY, COLORREF color, int alpha) {
-    if (alpha == 0) return; // Don't draw if invisible
-    
-    // Use the actual stored touch positions from touchX/touchY arrays
-    // This matches exactly what's being sent to Windows
-    int centerTouchId = (centerStickX == overlayL3CenterX && centerStickY == overlayL3CenterY) ? 0 : 1;
-    int cornerStartId = (centerTouchId == 0) ? 2 : 10;
-    
-    // Draw center circle using actual stored touch position
-    if (centerTouchId >= 0 && centerTouchId < 20 && touchActive[centerTouchId]) {
-        int centerOverlayX, centerOverlayY;
-        convertStickToOverlayCoords(touchX[centerTouchId], touchY[centerTouchId], centerX, centerY, centerOverlayX, centerOverlayY);
-        drawTouchCircleWithId(hdc, centerOverlayX, centerOverlayY, centerTouchId, color);
-    }
-    
-    // Draw 8 circles around the center using actual stored touch positions
-    for (int i = 0; i < 8; i++) {
-        int touchId = cornerStartId + i;
-        if (touchId >= 0 && touchId < 20 && touchActive[touchId]) {
-            int cornerOverlayX, cornerOverlayY;
-            convertStickToOverlayCoords(touchX[touchId], touchY[touchId], centerX, centerY, cornerOverlayX, cornerOverlayY);
-            drawTouchCircleWithId(hdc, cornerOverlayX, cornerOverlayY, touchId, color);
-        }
-    }
-}
-
 void ControllerMapper::drawAllTouches(HDC hdc, int centerX, int centerY) {
-    const int TOUCH_RADIUS = 8; // Small circles for each touch
+    const int TOUCH_RADIUS = 8;
     COLORREF colors[2] = {
         RGB(100, 150, 255),  // Touch 0: Blue
         RGB(255, 100, 150)   // Touch 1: Pink
     };
     
-    // Draw touches 0-1 individually
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 20; i++) {
         if (touchActive[i]) {
             int screenX, screenY;
             convertStickToOverlayCoords(touchX[i], touchY[i], centerX, centerY, screenX, screenY);
-            drawTouchCircleWithId(hdc, screenX, screenY, i, colors[i], TOUCH_RADIUS);
+            int radius = ((i == 0 && l3TouchActive) || (i == 1 && r3TouchActive)
+                ? LARGE_TOUCH_CONTACT_RADIUS_PIXELS
+                : TOUCH_RADIUS);
+            drawTouchCircleWithId(hdc, screenX, screenY, i, colors[i % 2], radius);
         }
-    }
-    
-    // Check for L3 palm touches (0 + 2-9) - center touch 0 + 8 around touches
-    bool l3PalmActive = false;
-    double l3PalmCenterX = 0.0, l3PalmCenterY = 0.0;
-    int l3PalmCount = 0;
-    
-    // Count center touch 0 (only if L3 is active, not L1/L2)
-    if (l3TouchActive && touchActive[0]) {
-        l3PalmActive = true;
-        l3PalmCenterX += touchX[0];
-        l3PalmCenterY += touchY[0];
-        l3PalmCount++;
-    }
-    
-    // Count around touches 2-9
-    for (int i = 2; i < 10; i++) {
-        if (touchActive[i]) {
-            l3PalmActive = true;
-            l3PalmCenterX += touchX[i];
-            l3PalmCenterY += touchY[i];
-            l3PalmCount++;
-        }
-    }
-    
-    // Draw L3 palm touch indicator if any L3 palm touches are active
-    if (l3PalmActive && l3PalmCount > 0) {
-        l3PalmCenterX /= l3PalmCount;
-        l3PalmCenterY /= l3PalmCount;
-        
-        // Convert stick coordinates to overlay coordinates (same as touches 0-1)
-        int overlayX = centerX + (int)(l3PalmCenterX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-        int overlayY = centerY - (int)(l3PalmCenterY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
-        
-        const int PALM_RADIUS = 10;
-        HBRUSH brush = CreateSolidBrush(RGB(50, 200, 150)); // Blue-green for L3 palm
-        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
-        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-        
-        Ellipse(hdc,
-                overlayX - PALM_RADIUS, overlayY - PALM_RADIUS,
-                overlayX + PALM_RADIUS, overlayY + PALM_RADIUS);
-        
-        SelectObject(hdc, oldBrush);
-        SelectObject(hdc, oldPen);
-        DeleteObject(brush);
-        DeleteObject(pen);
-    }
-    
-    // Check for R3 palm touches (1 + 10-17) - center touch 1 + 8 around touches
-    bool r3PalmActive = false;
-    double r3PalmCenterX = 0.0, r3PalmCenterY = 0.0;
-    int r3PalmCount = 0;
-    
-    // Count center touch 1 (only if R3 is active, not R1/R2)
-    if (r3TouchActive && touchActive[1]) {
-        r3PalmActive = true;
-        r3PalmCenterX += touchX[1];
-        r3PalmCenterY += touchY[1];
-        r3PalmCount++;
-    }
-    
-    // Count around touches 10-17
-    for (int i = 10; i < 18; i++) {
-        if (touchActive[i]) {
-            r3PalmActive = true;
-            r3PalmCenterX += touchX[i];
-            r3PalmCenterY += touchY[i];
-            r3PalmCount++;
-        }
-    }
-    
-    // Draw R3 palm touch indicator if any R3 palm touches are active
-    if (r3PalmActive && r3PalmCount > 0) {
-        r3PalmCenterX /= r3PalmCount;
-        r3PalmCenterY /= r3PalmCount;
-        
-        // Convert stick coordinates to overlay coordinates (same as touches 0-1)
-        int overlayX = centerX + (int)(r3PalmCenterX * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS));
-        int overlayY = centerY - (int)(r3PalmCenterY * (overlayStickRadius - OVERLAY_STICK_INDICATOR_RADIUS)); // Inverted Y
-        
-        const int PALM_RADIUS = 10;
-        HBRUSH brush = CreateSolidBrush(RGB(200, 50, 150)); // Pink-purple for R3 palm
-        HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-        HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, brush);
-        HPEN oldPen = (HPEN)SelectObject(hdc, pen);
-        
-        Ellipse(hdc,
-                overlayX - PALM_RADIUS, overlayY - PALM_RADIUS,
-                overlayX + PALM_RADIUS, overlayY + PALM_RADIUS);
-        
-        SelectObject(hdc, oldBrush);
-        SelectObject(hdc, oldPen);
-        DeleteObject(brush);
-        DeleteObject(pen);
     }
 }
 
@@ -1563,7 +1542,15 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
     // This is displayed on the overlay (bottom-left, large text)
     
     std::string info = "CONTROLLER INPUT MAPPER\r\n";
-    info += std::string(hasXInputController ? "XInput" : "DirectInput") + " | ";
+    if (currentMode == InputMode::Camera) {
+        info += "Camera Input | ";
+    } else if (hasXInputController) {
+        info += "XInput | ";
+    } else if (joystick) {
+        info += "DirectInput | ";
+    } else {
+        info += "No Controller | ";
+    }
     
     // Show current mode
     switch (currentMode) {
@@ -1576,12 +1563,22 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         case InputMode::Keyboard:
             info += "Keyboard Mode\r\n";
             break;
+        case InputMode::Camera:
+            info += "Camera Mode (Touch Output)\r\n";
+            break;
     }
     info += "\r\n";
     
     // Mode-specific status
-    if (currentMode == InputMode::Touch) {
-        info += "TOUCH STATUS:\r\n";
+    if (currentMode == InputMode::Touch || currentMode == InputMode::Camera) {
+        info += currentMode == InputMode::Camera ? "CAMERA TOUCH STATUS:\r\n" : "TOUCH STATUS:\r\n";
+
+        info += "BUTTONS: L1=" + std::string(prevL1 ? "ON" : "off") +
+                " R1=" + (prevR1 ? "ON" : "off") +
+                " L2=" + (prevL2 ? "ON" : "off") +
+                " R2=" + (prevR2 ? "ON" : "off") +
+                " L3=" + (prevL3 ? "ON" : "off") +
+                " R3=" + (prevR3 ? "ON" : "off") + "\r\n\r\n";
         
         // Add monitor information - use overlay's actual monitor for accuracy
         HMONITOR overlayMon = MonitorFromWindow(overlayHwnd, MONITOR_DEFAULTTONEAREST);
@@ -1638,6 +1635,7 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         info += "    Held Dir: " + (currentLHeldDirection >= 0 ? std::to_string(currentLHeldDirection) : "---") + "\r\n";
         info += "    LOCKED: " + (leftPointerLocked ? ("to " + std::to_string(leftLockedDirection)) : "---") + "\r\n";
         info += "    L3 Active: " + std::string(l3TouchActive ? "YES" : "---") + "\r\n";
+        info += "    Contact Radius: " + std::to_string(l3TouchActive ? LARGE_TOUCH_CONTACT_RADIUS_PIXELS : DEFAULT_TOUCH_CONTACT_RADIUS_PIXELS) + " px\r\n";
         
         // Touch 1 (R1/R2 or R3 center) - always show all lines
         bool touch1Active = rightTouchActive || (r3TouchActive && touchActive[1]);
@@ -1657,65 +1655,7 @@ void ControllerMapper::updateDebugInfo(double lAngle, double rAngle, int lDirect
         info += "    Held Dir: " + (currentRHeldDirection >= 0 ? std::to_string(currentRHeldDirection) : "---") + "\r\n";
         info += "    LOCKED: " + (rightPointerLocked ? ("to " + std::to_string(rightLockedDirection)) : "---") + "\r\n";
         info += "    R3 Active: " + std::string(r3TouchActive ? "YES" : "---") + "\r\n";
-        
-        
-        // L3 palm touches (0 + 2-9) - always show line
-        int activeL3PalmTouches = 0;
-        std::string l3PalmInfo = "  L3 palm (0+2-9): ";
-        // Count center touch 0 if L3 is active
-        if (l3TouchActive && touchActive[0]) {
-            activeL3PalmTouches++;
-            if (activeL3PalmTouches <= 5) {
-                LONG screenX, screenY;
-                getTouchCoordinates(touchX[0], touchY[0], screenX, screenY);
-                l3PalmInfo += "0(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
-            }
-        }
-        for (int i = 2; i < 10; i++) {
-            if (touchActive[i]) {
-                activeL3PalmTouches++;
-                if (activeL3PalmTouches <= 5) {
-                    LONG screenX, screenY;
-                    getTouchCoordinates(touchX[i], touchY[i], screenX, screenY);
-                    l3PalmInfo += std::to_string(i) + "(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
-                }
-            }
-        }
-        if (activeL3PalmTouches > 0) {
-            l3PalmInfo += "[" + std::to_string(activeL3PalmTouches) + " total]";
-        } else {
-            l3PalmInfo += "none";
-        }
-        info += l3PalmInfo + "\r\n";
-        
-        // R3 palm touches (1 + 10-17) - always show line
-        int activeR3PalmTouches = 0;
-        std::string r3PalmInfo = "  R3 palm (1+10-17): ";
-        // Count center touch 1 if R3 is active
-        if (r3TouchActive && touchActive[1]) {
-            activeR3PalmTouches++;
-            if (activeR3PalmTouches <= 5) {
-                LONG screenX, screenY;
-                getTouchCoordinates(touchX[1], touchY[1], screenX, screenY);
-                r3PalmInfo += "1(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
-            }
-        }
-        for (int i = 10; i < 18; i++) {
-            if (touchActive[i]) {
-                activeR3PalmTouches++;
-                if (activeR3PalmTouches <= 5) {
-                    LONG screenX, screenY;
-                    getTouchCoordinates(touchX[i], touchY[i], screenX, screenY);
-                    r3PalmInfo += std::to_string(i) + "(" + std::to_string(screenX) + "," + std::to_string(screenY) + ") ";
-                }
-            }
-        }
-        if (activeR3PalmTouches > 0) {
-            r3PalmInfo += "[" + std::to_string(activeR3PalmTouches) + " total]";
-        } else {
-            r3PalmInfo += "none";
-        }
-        info += r3PalmInfo + "\r\n";
+        info += "    Contact Radius: " + std::to_string(r3TouchActive ? LARGE_TOUCH_CONTACT_RADIUS_PIXELS : DEFAULT_TOUCH_CONTACT_RADIUS_PIXELS) + " px\r\n";
         info += "\r\n";
         
         // Stick positions
@@ -1914,7 +1854,7 @@ void ControllerMapper::run() {
         // Toggle debug on key press (not hold)
         if (togglePressed && !prevTogglePressed) {
             showDebugInfo = !showDebugInfo;
-            if (currentMode == InputMode::Camera) {
+            if (currentMode == InputMode::Camera && cameraInputMode != CameraInputMode::CursorDebug) {
                 sendCameraDebugState(showDebugInfo);
             }
             std::cout << "Debug info " << (showDebugInfo ? "enabled" : "disabled") << std::endl;
@@ -1956,6 +1896,10 @@ void ControllerMapper::run() {
         bool dpadLeftPressed = false;
         bool dpadRightPressed = false;
         double joyX = 0, joyY = 0, joyZ = 0, joyR = 0;
+
+        if (currentMode == InputMode::Camera && cameraInputMode == CameraInputMode::CursorDebug) {
+            controllerSuccess = true;
+        }
         
         if (aggregateControllerButtons) {
             for (DWORD controllerIndex = 0; controllerIndex < XUSER_MAX_COUNT; ++controllerIndex) {
@@ -2080,7 +2024,7 @@ void ControllerMapper::run() {
                 (calibrationKeyPressed && !prevCalibrationKeyPressed)) {
                 sendCameraControlCommand("CALIBRATE CIRCLE");
             }
-        } else if (currentMode == InputMode::Camera &&
+        } else if (currentMode == InputMode::Camera && cameraInputMode != CameraInputMode::CursorDebug &&
                    ((dpadRightPressed && !prevDpadRightPressed) ||
                     (calibrationPressed && !prevCalibrationPressed) ||
                     (calibrationKeyPressed && !prevCalibrationKeyPressed))) {
@@ -2093,6 +2037,7 @@ void ControllerMapper::run() {
         prevDpadLeftPressed = dpadLeftPressed;
         prevDpadRightPressed = dpadRightPressed;
         
+        bool externalInputExpired = false;
         // If external CV input is available, override controller values
         {
             std::lock_guard<std::mutex> lock(udpMutex);
@@ -2105,6 +2050,7 @@ void ControllerMapper::run() {
                     externalLeftPressed = false;
                     externalRightPressed = false;
                     externalUsesControllerButtons = false;
+                    externalInputExpired = true;
                 }
             }
 
@@ -2120,6 +2066,10 @@ void ControllerMapper::run() {
                 joyZ = externalRightX * 2.0 - 1.0;
                 joyR = 1.0 - externalRightY * 2.0;
             }
+        }
+
+        if (externalInputExpired && overlayHwnd) {
+            InvalidateRect(overlayHwnd, nullptr, FALSE);
         }
 
         if (controllerSuccess) {
@@ -2143,16 +2093,20 @@ void ControllerMapper::run() {
                     handleKeyboardControl(l1Pressed, r1Pressed, joyX, joyY, joyZ, joyR);
                     break;
                 case InputMode::Camera:
-                    // Camera mode maps external CV input into touch pipeline
-                    handleCameraControl(l1Pressed, r1Pressed, joyX, joyY, joyZ, joyR);
+                    if (cameraInputMode != CameraInputMode::CursorDebug) {
+                        handleCameraControl(l1Pressed, r1Pressed, l2Pressed, r2Pressed, l3Pressed, r3Pressed,
+                                            joyX, joyY, joyZ, joyR);
+                    }
                     break;
             }
             
             // Update overlay with stick positions and angles
-            updateOverlay(joyX, joyY, joyZ, joyR, lAngle, rAngle);
+            if (!(currentMode == InputMode::Camera && cameraInputMode == CameraInputMode::CursorDebug)) {
+                updateOverlay(joyX, joyY, joyZ, joyR, lAngle, rAngle);
+            }
 
             // Update debug info (only if visible for efficiency)
-            if (showDebugInfo) {
+            if (showDebugInfo && !(currentMode == InputMode::Camera && cameraInputMode == CameraInputMode::CursorDebug)) {
                 if (hasXInputController) {
                     updateDebugInfo(lAngle, rAngle, lDirection, rDirection);
                 } else if (joystick) {
@@ -2181,7 +2135,8 @@ void ControllerMapper::run() {
         GetCursorPos(&cursorPos);
         
         // Check for mouse movement to update debug overlay visually
-        if (showDebugInfo && (lastMousePos.x != cursorPos.x || lastMousePos.y != cursorPos.y)) {
+        if ((showDebugInfo || (cameraInputMode == CameraInputMode::CursorDebug && currentMode == InputMode::Camera)) &&
+            (lastMousePos.x != cursorPos.x || lastMousePos.y != cursorPos.y)) {
             // Mouse moved - force overlay redraw to show updated mouse position
             // The debug info text will be updated on next controller processing cycle
             // which already calls updateDebugInfo() and includes mouse position
