@@ -92,7 +92,7 @@ Hand modes use a two-hand peace-sign gesture to define the circular play area:
 1. Show a peace sign with both hands at your neutral playing position. The sender detects this automatically.
 2. Stop showing the peace signs. Releasing the gesture immediately captures and applies the calibration.
 
-Press `C` in the camera preview, or use the controller calibration command, only when you want to manually re-arm calibration.
+Use the controller calibration command, only when you want to manually re-arm calibration.
 
 Both hands must be visible, with the index and middle fingers extended and the ring and pinky fingers curled.
 
@@ -102,6 +102,7 @@ Use DS4Windows to set the left and right lightbars to distinct colors before sta
 
 The runtime calibration controls are sent from the controller:
 
+- L1/R2 : Touch down
 - D-pad Up: hold over an empty background, then release to sample ambient light
 - D-pad Left: hold over the left lightbar, then release to sample its color
 - D-pad Right: hold over the right lightbar, then release to sample its color
